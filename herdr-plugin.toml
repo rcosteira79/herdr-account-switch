@@ -10,6 +10,22 @@ platforms = ["macos", "linux"]
 [[startup]]
 command = ["python3", "switcher.py", "stamp"]
 
+# Add $acct to the sidebar rows, so the badge is actually rendered. Backs the
+# config up first and reloads the server. Startup only warns; this one writes.
+[[actions]]
+id = "enable-badge"
+title = "Accounts: add the $acct badge to the sidebar"
+contexts = ["global"]
+command = ["python3", "switcher.py", "enable-badge"]
+
+# The reverse: take $acct out of the rows and clear it off the panes. For when
+# you would rather show the account once in the tab bar than on every row.
+[[actions]]
+id = "disable-badge"
+title = "Accounts: remove the $acct badge from the sidebar"
+contexts = ["global"]
+command = ["python3", "switcher.py", "disable-badge"]
+
 # The picker (save / switch / rename / delete). `global` context: it is not
 # about any one pane, the credentials it swaps are machine-wide per agent kind.
 [[actions]]

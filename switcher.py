@@ -39,15 +39,17 @@ import time
 
 PLUGIN_ID = os.environ.get("HERDR_PLUGIN_ID", "rcosteira.account-switch")
 HERDR = os.environ.get("HERDR_BIN_PATH", "herdr")
+# The fallback has to match the directory herdr itself uses, because the badge
+# command runs from `tab_bar_right`, which passes no plugin state dir.
 STATE_DIR = os.environ.get("HERDR_PLUGIN_STATE_DIR") or os.path.expanduser(
-    "~/.local/state/herdr/account-switch"
+    os.path.join("~/.local/state/herdr/plugins", PLUGIN_ID)
 )
 PROFILES_DIR = os.path.join(STATE_DIR, "profiles")
 BACKUP_DIR = os.path.join(STATE_DIR, "backups")
 LOCK = os.path.join(STATE_DIR, "switch.lock")
 
 TOKEN = "acct"
-GLYPH = "\N{BUST IN SILHOUETTE}"  # 👤
+UNSAVED_MARK = "*"  # live login that no profile has a copy of
 KEEP_BACKUPS = 10
 IS_MAC = platform.system() == "Darwin"
 
@@ -61,8 +63,13 @@ def _flag(name, default=True):
 
 NOTIFY = _flag("ACCOUNT_SWITCH_NOTIFY")
 BADGE = _flag("ACCOUNT_SWITCH_BADGE")
-# Badge every agent pane, even when only one profile exists for that kind.
+# Badge a kind with no saved profile too.
 BADGE_ALWAYS = _flag("ACCOUNT_SWITCH_BADGE_ALWAYS", default=False)
+GLYPH = os.environ.get("ACCOUNT_SWITCH_GLYPH") or "\N{BUST IN SILHOUETTE}"  # 👤
+# Both fields are optional: "{glyph}" is a badge with no text, "{name}" is text
+# with no glyph.
+BADGE_FORMAT = os.environ.get("ACCOUNT_SWITCH_BADGE_FORMAT") or "{glyph} {name}"
+SEPARATOR = os.environ.get("ACCOUNT_SWITCH_SEPARATOR") or " · "
 
 
 class SwitchError(Exception):
@@ -567,6 +574,38 @@ def next_profile(kind):
 
 # ---- badges ---------------------------------------------------------------
 
+def account_labels(kinds=None):
+    """{kind: label} for the kinds worth naming. One saved profile is enough.
+
+    Saving a profile is the signal that you care which account is in use, and
+    the badge earns its space straight away: with one profile it still says
+    whether the live login is that profile or something else.
+    """
+    labels = {}
+    for kind in kinds or KIND_ORDER:
+        if not list_profiles(kind) and not BADGE_ALWAYS:
+            continue
+        backend = BACKENDS[kind]
+        live = backend.read_live()
+        if live is None:
+            labels[kind] = "logged out"
+            continue
+        current = active_profile(kind, live)
+        if current:
+            labels[kind] = current["label"]
+        else:
+            # Logged into something no profile has a copy of. Name it from the
+            # live identity and mark it, rather than showing a bare "?".
+            labels[kind] = (
+                default_label(kind, backend.identity(live) or {}) + UNSAVED_MARK
+            )
+    return labels
+
+
+def _format_badge(name):
+    return BADGE_FORMAT.format(glyph=GLYPH, name=name)
+
+
 def _set_badge(pane_id, text):
     herdr(
         "pane", "report-metadata", pane_id,
@@ -596,19 +635,13 @@ def stamp_badges():
     agents = live_agents()
     if agents is None:
         return
-    labels = {}
-    for kind in KIND_ORDER:
-        profiles = list_profiles(kind)
-        if not profiles or (len(profiles) < 2 and not BADGE_ALWAYS):
-            continue  # nothing to switch between: no badge worth the noise
-        current = active_profile(kind)
-        labels[kind] = current["label"] if current else "?"
+    labels = account_labels()
     for pane_id, info in agents.items():
         kind = kind_of_agent(info)
         if kind is None:
             continue
         if kind in labels:
-            _set_badge(pane_id, f"{GLYPH}{labels[kind]}")
+            _set_badge(pane_id, _format_badge(labels[kind]))
         else:
             _clear_badge(pane_id)
 
@@ -754,6 +787,26 @@ def cmd_status(argv):
 
 def cmd_stamp(argv):
     stamp_badges()
+    warn_if_unwired()
+    return 0
+
+
+def cmd_badge(argv):
+    """One line naming the live account(s), for `tab_bar_right`.
+
+    Credentials are machine-wide per kind, so the account is the same on every
+    pane. This prints it once for the tab bar instead of stamping every pane.
+    Writes nothing and talks to no socket: herdr re-runs it on its own interval.
+    """
+    kinds = [k for k in argv if k in BACKENDS] or None
+    labels = account_labels(kinds)
+    if not labels:
+        return 0
+    named = len(labels) > 1
+    print(SEPARATOR.join(
+        (f"{kind} " if named else "") + _format_badge(label)
+        for kind, label in labels.items()
+    ))
     return 0
 
 
@@ -794,28 +847,78 @@ def _profile_line(kind, p, width):
     return line[: max(0, width - 1)]
 
 
-def _ask(stdscr, question, initial=""):
-    """One-line editor on the last row. Returns None on esc."""
+def _center_win(stdscr, height, width):
     import curses
 
-    buf = list(initial)
     h, w = stdscr.getmaxyx()
-    y = h - 1
-    while True:
-        stdscr.move(y, 0)
-        stdscr.clrtoeol()
-        stdscr.addnstr(y, 0, question + "".join(buf), w - 1, curses.A_BOLD)
+    height, width = min(height, h), min(width, w)
+    win = curses.newwin(
+        height, width, max(0, (h - height) // 2), max(0, (w - width) // 2)
+    )
+    win.keypad(True)
+    return win
+
+
+def _ask(stdscr, title, question, initial=""):
+    """Centred one-field dialog. Returns the text, or None on esc."""
+    import curses
+
+    hint = "enter confirm · esc cancel"
+    buf = list(initial)
+    width = min(
+        max(len(question), len(title), len(hint), 44) + 6, stdscr.getmaxyx()[1]
+    )
+    try:
+        while True:
+            win = _center_win(stdscr, 8, width)
+            win.erase()
+            win.box()
+            inner = width - 4
+            win.addnstr(0, 2, " %s " % title, inner, curses.A_BOLD)
+            win.addnstr(2, 2, question, inner, curses.A_BOLD)
+            win.addnstr(4, 2, "> " + "".join(buf) + "_", inner)
+            win.addnstr(6, 2, hint, inner, curses.A_DIM)
+            win.refresh()
+            ch = win.getch()
+            if ch == 27:
+                return None
+            if ch in (curses.KEY_ENTER, 10, 13):
+                return "".join(buf).strip()
+            if ch in (curses.KEY_BACKSPACE, 127, 8):
+                if buf:
+                    buf.pop()
+            elif 32 <= ch < 127:
+                buf.append(chr(ch))
+    finally:
+        stdscr.touchwin()
         stdscr.refresh()
-        ch = stdscr.getch()
-        if ch in (27,):
-            return None
-        if ch in (curses.KEY_ENTER, 10, 13):
-            return "".join(buf).strip()
-        if ch in (curses.KEY_BACKSPACE, 127, 8):
-            if buf:
-                buf.pop()
-        elif 32 <= ch < 127:
-            buf.append(chr(ch))
+
+
+def _confirm(stdscr, title, question, note=None):
+    """Centred yes/no dialog. Only `y` confirms; anything else cancels."""
+    import curses
+
+    hint = "y confirm · any other key cancel"
+    width = min(
+        max(len(question), len(title), len(hint), len(note or ""), 44) + 6,
+        stdscr.getmaxyx()[1],
+    )
+    height = 9 if note else 7
+    try:
+        win = _center_win(stdscr, height, width)
+        win.erase()
+        win.box()
+        inner = width - 4
+        win.addnstr(0, 2, " %s " % title, inner, curses.A_BOLD)
+        win.addnstr(2, 2, question, inner, curses.A_BOLD)
+        if note:
+            win.addnstr(4, 2, note, inner, curses.A_DIM)
+        win.addnstr(height - 2, 2, hint, inner, curses.A_DIM)
+        win.refresh()
+        return win.getch() in (ord("y"), ord("Y"))
+    finally:
+        stdscr.touchwin()
+        stdscr.refresh()
 
 
 def cmd_ui(argv):
@@ -863,7 +966,7 @@ def cmd_ui(argv):
                     )
                 y += 1
             if message and h > 1:
-                stdscr.addnstr(h - 1, 0, message[: w - 1], w - 1, curses.A_DIM)
+                stdscr.addnstr(h - 1, 0, message[: w - 1], w - 1, curses.A_BOLD)
             stdscr.refresh()
 
             try:
@@ -896,14 +999,19 @@ def cmd_ui(argv):
                 if live is not None:
                     ident = BACKENDS[kind].identity(live)
                 suggested = default_label(kind, ident) if ident else ""
-                name = _ask(stdscr, f"save {kind} login as: ", suggested)
+                name = _ask(
+                    stdscr, "Save profile", f"Name this {kind} login?", suggested
+                )
                 if name:
                     try:
                         message = save_live(kind, name)
                     except SwitchError as exc:
                         message = str(exc)
             elif ch == ord("r") and selected:
-                name = _ask(stdscr, "rename to: ", selected[2]["label"])
+                name = _ask(
+                    stdscr, "Rename profile",
+                    f"New name for {selected[2]['label']}?", selected[2]["label"],
+                )
                 if name:
                     profile = selected[2]
                     delete_profile(profile["kind"], profile["slug"])
@@ -914,27 +1022,324 @@ def cmd_ui(argv):
                     message = f"renamed to {name}"
             elif ch == ord("x") and selected:
                 profile = selected[2]
+                # Deleting a profile removes this plugin's copy, never the
+                # credential store the CLI reads — you stay logged in either way.
+                note = None
                 if profile.get("_active"):
-                    message = "refusing to delete the profile that is logged in"
-                else:
-                    answer = _ask(stdscr, f"delete {profile['label']}? [y/N] ")
-                    if (answer or "").lower().startswith("y"):
-                        delete_profile(profile["kind"], profile["slug"])
-                        message = f"deleted {profile['label']}"
-                        sel = max(0, sel - 1)
+                    note = "In use. You stay logged in; only the copy goes."
+                if _confirm(
+                    stdscr, "Delete profile",
+                    f"Delete {profile['label']}?", note,
+                ):
+                    delete_profile(profile["kind"], profile["slug"])
+                    message = f"deleted {profile['label']}"
+                    sel = max(0, sel - 1)
 
     curses.wrapper(run)
     return 0
 
 
+# ---- sidebar wiring -------------------------------------------------------
+
+SIDEBAR_TABLE = "[ui.sidebar.agents]"
+OVERRIDE_TABLE = "[ui.sidebar.agents.rows_by_agent]"
+DEFAULT_ROWS = '[["state_icon", "workspace", "tab"], ["agent"]]'
+CONFIG_BACKUP_DIR = os.path.join(STATE_DIR, "config-backups")
+NAG_MARKER = os.path.join(STATE_DIR, ".sidebar-nagged")
+_HEADER_RE = re.compile(r"\[\[?[^\[\]]+\]\]?\s*(#.*)?$")
+
+
+def config_path():
+    sock = os.environ.get("HERDR_SOCKET_PATH")
+    if sock:
+        guess = os.path.join(os.path.dirname(sock), "config.toml")
+        if os.path.exists(guess):
+            return guess
+    base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    return os.path.join(base, "herdr", "config.toml")
+
+
+def _uncommented(text):
+    return "\n".join(l for l in text.splitlines() if not l.lstrip().startswith("#"))
+
+
+def _token_wired(text):
+    return '"${}"'.format(TOKEN) in _uncommented(text)
+
+
+def _match_brackets(text, i):
+    while i < len(text) and text[i] != "[":
+        if not text[i].isspace():
+            return None
+        i += 1
+    depth = 0
+    while i < len(text):
+        if text[i] == "[":
+            depth += 1
+        elif text[i] == "]":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    return None
+
+
+def _find_value(text, header, key):
+    """Offsets of the `key = [...]` array inside `header`, or None.
+
+    Bracket depth is tracked so a row line such as `["agent"],` inside a
+    multi-line value is never mistaken for the next table header.
+    """
+    lines = text.splitlines(keepends=True)
+    start = None
+    for i, line in enumerate(lines):
+        if line.strip() == header:
+            start = i
+            break
+    if start is None:
+        return None
+    offset = sum(len(l) for l in lines[: start + 1])
+    depth = 0
+    for line in lines[start + 1 :]:
+        if depth == 0:
+            if _HEADER_RE.match(line.strip()):
+                return None
+            match = re.match(r"\s*%s\s*=\s*" % re.escape(key), line)
+            if match:
+                vstart = offset + match.end()
+                vend = _match_brackets(text, vstart)
+                return None if vend is None else (vstart, vend)
+        depth += line.count("[") - line.count("]")
+        offset += len(line)
+    return None
+
+
+def _append_token(value):
+    depth = 0
+    inner_open = None
+    for i, ch in enumerate(value):
+        if ch == "[":
+            depth += 1
+            if depth == 2:
+                inner_open = i
+        elif ch == "]":
+            if depth == 2 and inner_open is not None:
+                inner = value[inner_open + 1 : i].strip()
+                sep = ", " if inner else ""
+                return value[:i].rstrip() + '%s"$%s"' % (sep, TOKEN) + value[i:]
+            depth -= 1
+    return None
+
+
+def _drop_token(value):
+    """Remove every "$TOKEN" entry from a rows array, or None if absent."""
+    quoted = '"$%s"' % TOKEN
+    if quoted not in value:
+        return None
+    out = re.sub(r",\s*" + re.escape(quoted), "", value)
+    out = re.sub(re.escape(quoted) + r"\s*,\s*", "", out)
+    out = out.replace(quoted, "")
+    return out
+
+
+def _valid_toml(text):
+    """False only when tomllib is present and rejects the text."""
+    try:
+        import tomllib
+    except ImportError:
+        return True  # too old to check; the caller still keeps a backup
+    try:
+        tomllib.loads(text)
+        return True
+    except Exception:
+        return False
+
+
+def _stripped_config(text, kinds):
+    """(new text, [what changed]) on success, else (None, reason)."""
+    if not _token_wired(text):
+        return None, "already"
+    out, changed = text, []
+    for header, key in (
+        [(SIDEBAR_TABLE, "rows")] + [(OVERRIDE_TABLE, k) for k in kinds]
+    ):
+        span = _find_value(out, header, key)
+        if not span:
+            continue
+        dropped = _drop_token(out[span[0] : span[1]])
+        if dropped is None:
+            continue
+        out = out[: span[0]] + dropped + out[span[1] :]
+        changed.append("rows" if key == "rows" else "rows_by_agent.%s" % key)
+    if not changed:
+        return None, "unparsed"
+    return out, changed
+
+
+def _merged_config(text, kinds):
+    """(new text, [what changed]) on success, else (None, reason).
+
+    An override in rows_by_agent replaces rows rather than extending it, so a
+    kind listed there needs the token merged into its own layout too.
+    """
+    if _token_wired(text):
+        return None, "already"
+    out, changed = text, []
+    span = _find_value(out, SIDEBAR_TABLE, "rows")
+    if span:
+        merged = _append_token(out[span[0] : span[1]])
+        if merged is None:
+            return None, "unparsed"
+        out = out[: span[0]] + merged + out[span[1] :]
+        changed.append("rows")
+    elif SIDEBAR_TABLE in _uncommented(out):
+        return None, "unparsed"
+    else:
+        block = "%s\nrows = %s\n" % (SIDEBAR_TABLE, _append_token(DEFAULT_ROWS))
+        out = out.rstrip("\n") + "\n\n" + block
+        changed.append("rows (new table)")
+    for kind in kinds:
+        span = _find_value(out, OVERRIDE_TABLE, kind)
+        if not span:
+            continue
+        merged = _append_token(out[span[0] : span[1]])
+        if merged is None:
+            continue
+        out = out[: span[0]] + merged + out[span[1] :]
+        changed.append("rows_by_agent.%s" % kind)
+    return out, changed
+
+
+def sidebar_snippet():
+    return "%s\nrows = %s" % (SIDEBAR_TABLE, _append_token(DEFAULT_ROWS))
+
+
+def _rewrite_config(edit, kinds, done_word):
+    """Apply `edit` to config.toml, backing the original up first.
+
+    Returns (status, where, what changed). The edited text is parsed before it
+    replaces anything, so a bad edit is refused rather than written.
+    """
+    path = config_path()
+    if not os.path.exists(path):
+        return "missing", path, []
+    with open(path, encoding="utf-8") as handle:
+        text = handle.read()
+    out, info = edit(text, kinds)
+    if out is None:
+        return info, path, []
+    if not _valid_toml(out):
+        return "unparsed", path, []
+    os.makedirs(CONFIG_BACKUP_DIR, exist_ok=True)
+    backup = os.path.join(CONFIG_BACKUP_DIR, "config.toml.%d" % int(time.time()))
+    with open(backup, "w", encoding="utf-8") as handle:
+        handle.write(text)
+    tmp = "%s.account-switch-tmp" % path
+    with open(tmp, "w", encoding="utf-8") as handle:
+        handle.write(out)
+    os.replace(tmp, path)
+    herdr("server", "reload-config")
+    return done_word, backup, info
+
+
+def wire_sidebar(kinds):
+    """Merge $TOKEN into the sidebar rows, keeping a backup of the original."""
+    return _rewrite_config(_merged_config, kinds, "wired")
+
+
+def unwire_sidebar(kinds):
+    """Remove $TOKEN from the sidebar rows, keeping a backup of the original."""
+    return _rewrite_config(_stripped_config, kinds, "unwired")
+
+
+def warn_if_unwired():
+    """A token nothing references renders nothing, and herdr reports no error.
+
+    Startup says so once rather than editing config behind your back.
+    """
+    try:
+        if not BADGE or os.path.exists(NAG_MARKER):
+            return
+        path = config_path()
+        if not os.path.exists(path):
+            return
+        with open(path, encoding="utf-8") as handle:
+            if _token_wired(handle.read()):
+                return
+        herdr(
+            "notification", "show", "Accounts: badge not visible",
+            "--body",
+            "No sidebar row names $%s. Run the enable-badge action to add it."
+            % TOKEN,
+            "--sound", "none",
+        )
+        os.makedirs(STATE_DIR, exist_ok=True)
+        with open(NAG_MARKER, "w", encoding="utf-8") as handle:
+            handle.write("")
+    except Exception:
+        pass
+
+
+def cmd_enable_badge(argv):
+    status, where, info = wire_sidebar(KIND_ORDER)
+    if status == "wired":
+        print("wired $%s into %s (%s)" % (TOKEN, config_path(), ", ".join(info)))
+        print("backup: %s" % where)
+        print("config reloaded")
+    elif status == "already":
+        print("$%s is already named in the sidebar rows — nothing to do." % TOKEN)
+    elif status == "missing":
+        print("no herdr config at %s\n\nadd:\n\n%s" % (where, sidebar_snippet()))
+        return 1
+    else:
+        print(
+            "could not edit %s safely — add $%s by hand:\n\n%s"
+            % (where, TOKEN, sidebar_snippet())
+        )
+        return 1
+    return 0
+
+
+def cmd_disable_badge(argv):
+    """Stop showing the pane badge: leave the rows, then clear what is stamped.
+
+    Removing the token from the rows is what hides it. Clearing the panes as
+    well means nothing is left behind for a later `$acct` row to resurrect.
+    """
+    status, where, info = unwire_sidebar(KIND_ORDER)
+    agents = live_agents() or {}
+    for pane_id in agents:
+        _clear_badge(pane_id)
+    if status == "unwired":
+        print("removed $%s from %s (%s)" % (TOKEN, config_path(), ", ".join(info)))
+        print("backup: %s" % where)
+        print("cleared the badge from %d pane(s); config reloaded" % len(agents))
+    elif status == "already":
+        print("$%s is not named in the sidebar rows — nothing to remove." % TOKEN)
+        print("cleared the badge from %d pane(s)" % len(agents))
+    elif status == "missing":
+        print("no herdr config at %s" % where)
+        return 1
+    else:
+        print(
+            "could not edit %s safely — remove \"$%s\" from the rows by hand"
+            % (where, TOKEN)
+        )
+        return 1
+    return 0
+
+
 DISPATCH = {
     "ui": cmd_ui,
+    "enable-badge": cmd_enable_badge,
+    "disable-badge": cmd_disable_badge,
     "open": cmd_open,
     "next": cmd_next,
     "switch": cmd_switch,
     "save": cmd_save,
     "status": cmd_status,
     "stamp": cmd_stamp,
+    "badge": cmd_badge,
 }
 
 
