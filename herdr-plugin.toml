@@ -1,0 +1,46 @@
+id = "rcosteira.account-switch"
+name = "Account Switch"
+version = "0.1.0"
+min_herdr_version = "0.8.0"
+description = "Hot-swap Claude Code / Codex logins without re-authenticating. Overlay picker, cycle-to-next keybinding, and a per-pane account badge ($acct)."
+platforms = ["macos", "linux"]
+
+# Re-stamp the $acct badges after a server restart / live handoff. Badges are
+# display-only, so a missed stamp costs nothing but a stale-looking sidebar.
+[[startup]]
+command = ["python3", "switcher.py", "stamp"]
+
+# The picker (save / switch / rename / delete). `global` context: it is not
+# about any one pane, the credentials it swaps are machine-wide per agent kind.
+[[actions]]
+id = "open"
+title = "Accounts: open picker"
+contexts = ["global"]
+command = ["python3", "switcher.py", "open"]
+
+# Cycle to the next profile of the focused agent's kind — the "on the go" path,
+# no UI. `pane` context so it can read the focused agent to pick the kind.
+[[actions]]
+id = "next"
+title = "Accounts: switch to next account"
+contexts = ["global", "pane"]
+command = ["python3", "switcher.py", "next"]
+
+# Snapshot whatever is logged in right now into a new profile.
+[[actions]]
+id = "save"
+title = "Accounts: save current login as a profile"
+contexts = ["global"]
+command = ["python3", "switcher.py", "save"]
+
+[[actions]]
+id = "status"
+title = "Accounts: status"
+contexts = ["global"]
+command = ["python3", "switcher.py", "status"]
+
+[[panes]]
+id = "picker"
+title = "Accounts"
+command = ["python3", "switcher.py", "ui"]
+placement = "overlay"
