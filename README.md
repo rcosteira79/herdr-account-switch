@@ -235,7 +235,11 @@ you something, so every switch:
 1. takes an `flock`, so two switches (or a switch racing your own keybinding)
    can't interleave writes while a CLI is refreshing its token;
 2. **auto-saves the outgoing login** if it isn't in any profile yet — you can
-   never overwrite an account the plugin doesn't already have a copy of;
+   never overwrite an account the plugin doesn't already have a copy of — and
+   **refreshes its snapshot** if it is. The CLI keeps renewing the live tokens,
+   so a profile saved hours ago holds older ones; parking the account without
+   updating it can leave a copy that is no longer able to renew, and that costs
+   a browser login to repair;
 3. writes a timestamped backup of it under `HERDR_PLUGIN_STATE_DIR/backups/`
    (last 10 kept);
 4. reads the store back and compares the account identity, and **puts the

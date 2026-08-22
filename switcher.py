@@ -527,10 +527,23 @@ def switch(kind, key):
             if live_fp and live_fp == target.get("fingerprint"):
                 return f"{kind}: already on {target['label']}"
             # Never overwrite a login we don't have a copy of.
-            if not any(p.get("fingerprint") == live_fp for p in list_profiles(kind)):
+            outgoing = next(
+                (p for p in list_profiles(kind) if p.get("fingerprint") == live_fp),
+                None,
+            )
+            if outgoing is None:
                 ident = backend.identity(live)
                 rescued = make_profile(kind, "autosaved-" + default_label(kind, ident), live)
                 write_profile(rescued)
+            else:
+                # Refresh the snapshot before parking it. The CLI keeps renewing
+                # the live tokens, so a profile saved hours ago holds older ones.
+                # Restoring a stale copy can leave that account unable to renew,
+                # which costs a browser login — and rotating makes that routine.
+                outgoing["payload"] = live
+                outgoing["identity"] = backend.identity(live)
+                outgoing["saved_at"] = int(time.time())
+                write_profile(outgoing)
             _backup(kind, live)
 
         backend.write_live(target["payload"])
@@ -782,6 +795,30 @@ def cmd_status(argv):
             print(f"  {mark} {p['label']:<16} {backend.describe(p.get('identity') or {})}")
         if not profiles:
             print("    (no profiles saved — run the save action)")
+    return 0
+
+
+def cmd_list(argv):
+    """Profiles as JSON, for another plugin to read. Never prints credentials."""
+    kinds = KIND_ORDER
+    if "--kind" in argv:
+        wanted = argv[argv.index("--kind") + 1]
+        kinds = [wanted] if wanted in BACKENDS else []
+    out = []
+    for kind in kinds:
+        live = BACKENDS[kind].read_live()
+        live_fp = _fingerprint(BACKENDS[kind].identity(live)) if live else None
+        for profile in list_profiles(kind):
+            out.append({
+                "kind": kind,
+                "slug": profile["slug"],
+                "label": profile["label"],
+                "active": bool(live_fp) and profile.get("fingerprint") == live_fp,
+                "saved_at": profile.get("saved_at"),
+                "last_used": profile.get("last_used"),
+                "tier": (profile.get("identity") or {}).get("subscription_type"),
+            })
+    print(json.dumps(out))
     return 0
 
 
@@ -1340,6 +1377,7 @@ DISPATCH = {
     "status": cmd_status,
     "stamp": cmd_stamp,
     "badge": cmd_badge,
+    "list": cmd_list,
 }
 
 
