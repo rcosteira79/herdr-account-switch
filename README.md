@@ -94,7 +94,7 @@ in the tab bar instead and turn the pane token off:
 ```toml
 [ui]
 tab_bar_right = [
-  { type = "command", command = "python3 /path/to/herdr-account-switch/switcher.py badge claude", interval_seconds = 30, timeout_seconds = 5 },
+  { type = "command", command = "python3 ~/.local/state/herdr/plugins/rcosteira.account-switch/current/switcher.py badge claude", interval_seconds = 30, timeout_seconds = 5 },
   { type = "text", text = "  " },
 ]
 tab_bar_right_separator = ""
@@ -106,11 +106,12 @@ keeps it. Blank `tab_bar_right_separator` when you add one, or the default ` · 
 lands between the badge and the inset. Drop both lines if you want the badge
 hard against the edge.
 
-`herdr plugin list --plugin rcosteira.account-switch --json` reports the path.
-Note that an installed plugin's directory carries a content hash, so the path
-changes when the plugin updates and the badge goes quietly blank — herdr clears
-a command's value when it fails. A symlink you point at the current install, and
-name in the command instead, survives updates.
+That path is a symlink the plugin repoints at itself on every herdr start, so it
+keeps working after an update. Naming the install directory directly does not:
+it carries a content hash, so an update moves it, and herdr clears a command's
+value when it fails — the badge would vanish with nothing to explain it.
+`herdr plugin list --plugin rcosteira.account-switch --json` reports the real
+directory if you need it.
 The `badge` command prints one line and exits — herdr re-runs it on the
 interval, so this needs no daemon and no `[[startup]]` hook. It reads the
 credential store and nothing else: no socket, no writes. Naming a kind
@@ -129,7 +130,7 @@ the output — the same one-line `badge` command, no herdr involved:
 ```json
 {
   "type": "custom-command",
-  "commandPath": "python3 /path/to/herdr-account-switch/switcher.py badge claude",
+  "commandPath": "python3 ~/.local/state/herdr/plugins/rcosteira.account-switch/current/switcher.py badge claude",
   "timeout": 2000
 }
 ```
@@ -165,7 +166,7 @@ For a `tab_bar_right` entry, set them inline on the command — that env is your
 to write, unlike the one herdr hands to plugin actions:
 
 ```toml
-command = "ACCOUNT_SWITCH_GLYPH=🔑 python3 /path/to/herdr-account-switch/switcher.py badge claude"
+command = "ACCOUNT_SWITCH_GLYPH=🔑 python3 ~/.local/state/herdr/plugins/rcosteira.account-switch/current/switcher.py badge claude"
 ```
 
 **2. Keybindings** — `herdr server reload-config` after editing these:
@@ -192,7 +193,7 @@ reports where the plugin is installed:
 [[keys.command]]
 key = "prefix+1"
 type = "shell"
-command = "python3 /path/to/herdr-account-switch/switcher.py switch claude work"
+command = "python3 ~/.local/state/herdr/plugins/rcosteira.account-switch/current/switcher.py switch claude work"
 ```
 
 ## Usage

@@ -49,6 +49,12 @@ STATE_DIR = os.environ.get("HERDR_PLUGIN_STATE_DIR") or os.path.expanduser(
 PROFILES_DIR = os.path.join(STATE_DIR, "profiles")
 BACKUP_DIR = os.path.join(STATE_DIR, "backups")
 LOCK = os.path.join(STATE_DIR, "switch.lock")
+# An installed plugin's directory carries a content hash, so it moves on every
+# update and anything naming that path breaks silently. This symlink lives in
+# the state directory, which is keyed by plugin id and therefore stable, and is
+# repointed at each startup. Config can name it and survive updates.
+ROOT = os.path.dirname(os.path.abspath(__file__))
+STABLE_LINK = os.path.join(STATE_DIR, "current")
 
 TOKEN = "acct"
 UNSAVED_MARK = "*"  # live login that no profile has a copy of
@@ -1545,7 +1551,28 @@ def cmd_usage(argv):
     return 0
 
 
+def refresh_stable_link():
+    """Point STATE_DIR/current at wherever this copy of the plugin lives.
+
+    Replaced atomically, so a `tab_bar_right` or status-line command reading
+    through it never sees a missing path mid-update.
+    """
+    try:
+        if os.path.realpath(STABLE_LINK) == ROOT:
+            return STABLE_LINK
+        _secure_dir(STATE_DIR)
+        tmp = STABLE_LINK + ".tmp"
+        if os.path.islink(tmp) or os.path.exists(tmp):
+            os.remove(tmp)
+        os.symlink(ROOT, tmp)
+        os.replace(tmp, STABLE_LINK)
+        return STABLE_LINK
+    except OSError:
+        return None  # a badge is not worth failing a startup hook over
+
+
 def cmd_stamp(argv):
+    refresh_stable_link()
     stamp_badges()
     warn_if_unwired()
     return 0
