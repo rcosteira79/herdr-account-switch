@@ -381,10 +381,20 @@ $(herdr plugin config-dir rcosteira.account-switch)/config.toml
 ```
 
 ```toml
+# The badge character on each agent pane and in the tab bar.
 glyph = "🔑"
+
+# What goes around it. Drop {name} for a badge with no account name.
 badge_format = "{glyph}{name}"
+
+# Percent at which a usage window turns amber, then red.
 usage_thresholds = "50,75"
+
+# Override one colour of the four: ok, warn, crit, stale.
 usage_colors = "warn=magenta"
+
+# Renew a parked account's token so its usage can be read. Turning this off
+# leaves parked accounts showing their last-seen numbers with an age.
 usage_renew = false
 ```
 
