@@ -53,7 +53,10 @@ LOCK = os.path.join(STATE_DIR, "switch.lock")
 # update and anything naming that path breaks silently. This symlink lives in
 # the state directory, which is keyed by plugin id and therefore stable, and is
 # repointed at each startup. Config can name it and survive updates.
-ROOT = os.path.dirname(os.path.abspath(__file__))
+# realpath, not abspath: this script is *meant* to be run through the symlink
+# below, and abspath would then report the symlink's own directory — so the
+# refresh would point the link at itself and nothing could be read through it.
+ROOT = os.path.dirname(os.path.realpath(__file__))
 STABLE_LINK = os.path.join(STATE_DIR, "current")
 
 TOKEN = "acct"
@@ -1558,6 +1561,10 @@ def refresh_stable_link():
     through it never sees a missing path mid-update.
     """
     try:
+        # A link to itself is unreadable and unrecoverable from the outside,
+        # so refuse it outright rather than trusting the caller's path.
+        if os.path.abspath(STABLE_LINK) == ROOT:
+            return None
         if os.path.realpath(STABLE_LINK) == ROOT:
             return STABLE_LINK
         _secure_dir(STATE_DIR)
