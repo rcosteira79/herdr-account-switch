@@ -32,10 +32,10 @@ restate a value that changes twice a day.
 ## Install
 
 ```sh
-herdr plugin install rcosteira79/herdr-plugins/account-switch
+herdr plugin install rcosteira79/herdr-account-switch
 ```
 
-Or link a local checkout: `herdr plugin link /path/to/herdr-plugins/account-switch`.
+Or link a local checkout: `herdr plugin link /path/to/herdr-account-switch`.
 Re-run `install`/`link` after a `herdr update` — updates drop plugins.
 
 Then, with the account you use most logged in:
