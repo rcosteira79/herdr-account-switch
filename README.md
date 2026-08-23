@@ -372,7 +372,31 @@ An account already logged in but never saved shows up in the picker as
 *unsaved*; press `s` before switching away if you want to name it yourself
 rather than take the `autosaved-…` name.
 
-## Config (env)
+## Config
+
+Settings live in a file in the plugin's own config directory:
+
+```sh
+$(herdr plugin config-dir rcosteira.account-switch)/config.toml
+```
+
+```toml
+glyph = "🔑"
+badge_format = "{glyph}{name}"
+usage_thresholds = "50,75"
+usage_colors = "warn=magenta"
+usage_renew = false
+```
+
+The key is the variable below without its `ACCOUNT_SWITCH_` prefix, lowercased.
+`config.json` works too if you prefer it. A file that fails to parse is ignored
+rather than fatal, and the defaults stand.
+
+An environment variable still wins over the file, but is rarely the practical
+choice: plugin actions inherit the **herdr server's** environment, so setting
+one means exporting it before herdr starts. The `tab_bar_right` and
+ccstatusline entries are the exception — those take variables inline on the
+command, which is why they are the easy place to restyle the badge.
 
 | var | default | meaning |
 |-----|---------|---------|
@@ -387,10 +411,6 @@ rather than take the `autosaved-…` name.
 | `ACCOUNT_SWITCH_RENEW_MARGIN_S` | `300` | renew this far ahead of a token's expiry |
 | `HERDR_BIN_PATH` | `herdr` | herdr binary (set by herdr when it invokes an action) |
 
-Actions inherit the herdr server's environment, so setting these for the pane
-badge means exporting them before starting herdr. The `tab_bar_right` and
-ccstatusline entries take them inline on the command instead, which is why those
-two are the easy places to restyle the badge.
 
 ## Fragility
 

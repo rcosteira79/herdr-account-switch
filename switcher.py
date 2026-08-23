@@ -56,17 +56,61 @@ KEEP_BACKUPS = 10
 IS_MAC = platform.system() == "Darwin"
 
 
+CONFIG_DIR = os.environ.get("HERDR_PLUGIN_CONFIG_DIR") or STATE_DIR
+PREFIX = "ACCOUNT_SWITCH_"
+
+
+def _load_settings():
+    """Settings from the plugin's own config dir.
+
+    Actions inherit the herdr server's environment, so an environment variable
+    can only be set by restarting herdr with it exported. A file in the config
+    dir is the one place a person can actually change these.
+    """
+    for name in ("config.toml", "config.json"):
+        path = os.path.join(CONFIG_DIR, name)
+        if not os.path.exists(path):
+            continue
+        try:
+            if name.endswith(".toml"):
+                import tomllib
+                with open(path, "rb") as handle:
+                    return tomllib.load(handle)
+            with open(path, encoding="utf-8") as handle:
+                return json.load(handle)
+        except Exception:
+            continue  # a broken config must not stop the picker
+    return {}
+
+
+SETTINGS = _load_settings()
+
+
+def _setting(name):
+    """The environment first, then the config file, then nothing.
+
+    The config key is the variable without its prefix, lowercased:
+    ACCOUNT_SWITCH_USAGE_RENEW is `usage_renew`.
+    """
+    if name in os.environ:
+        return os.environ[name]
+    key = name[len(PREFIX):].lower() if name.startswith(PREFIX) else name.lower()
+    return SETTINGS.get(key)
+
+
 def _flag(name, default=True):
-    raw = os.environ.get(name)
-    if raw is None:
+    value = _setting(name)
+    if value is None:
         return default
-    return raw.strip().lower() not in ("0", "false", "no", "off", "")
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() not in ("0", "false", "no", "off", "")
 
 
 def _num_env(name, default):
     try:
-        return float(os.environ[name])
-    except (KeyError, ValueError):
+        return float(_setting(name))
+    except (TypeError, ValueError):
         return default
 
 
@@ -74,11 +118,11 @@ NOTIFY = _flag("ACCOUNT_SWITCH_NOTIFY")
 BADGE = _flag("ACCOUNT_SWITCH_BADGE")
 # Badge a kind with no saved profile too.
 BADGE_ALWAYS = _flag("ACCOUNT_SWITCH_BADGE_ALWAYS", default=False)
-GLYPH = os.environ.get("ACCOUNT_SWITCH_GLYPH") or "\N{BUST IN SILHOUETTE}"  # 👤
+GLYPH = _setting("ACCOUNT_SWITCH_GLYPH") or "\N{BUST IN SILHOUETTE}"  # 👤
 # Both fields are optional: "{glyph}" is a badge with no text, "{name}" is text
 # with no glyph.
-BADGE_FORMAT = os.environ.get("ACCOUNT_SWITCH_BADGE_FORMAT") or "{glyph} {name}"
-SEPARATOR = os.environ.get("ACCOUNT_SWITCH_SEPARATOR") or " · "
+BADGE_FORMAT = _setting("ACCOUNT_SWITCH_BADGE_FORMAT") or "{glyph} {name}"
+SEPARATOR = _setting("ACCOUNT_SWITCH_SEPARATOR") or " · "
 
 
 class SwitchError(Exception):
@@ -611,13 +655,13 @@ USAGE_TIMEOUT_S = _num_env("ACCOUNT_SWITCH_USAGE_TIMEOUT_S", 8.0)
 # How long to leave an account alone after it answers 429.
 USAGE_BACKOFF_S = _num_env("ACCOUNT_SWITCH_USAGE_BACKOFF_S", 300.0)
 BAR_WIDTH = int(_num_env("ACCOUNT_SWITCH_USAGE_BAR_WIDTH", 10))
-_BAR_CHARS = os.environ.get("ACCOUNT_SWITCH_USAGE_BAR") or "█░"
+_BAR_CHARS = _setting("ACCOUNT_SWITCH_USAGE_BAR") or "█░"
 BAR_FULL = _BAR_CHARS[0]
 BAR_EMPTY = _BAR_CHARS[1] if len(_BAR_CHARS) > 1 else " "
 
 
 def _thresholds():
-    raw = os.environ.get("ACCOUNT_SWITCH_USAGE_THRESHOLDS") or "60,85"
+    raw = _setting("ACCOUNT_SWITCH_USAGE_THRESHOLDS") or "60,85"
     try:
         warn, crit = (float(x) for x in raw.split(",", 1))
         return warn, crit
@@ -637,7 +681,7 @@ COLOR_NAMES = {
 
 def _color_map():
     out = {"ok": "green", "warn": "yellow", "crit": "red", "stale": "blue"}
-    raw = os.environ.get("ACCOUNT_SWITCH_USAGE_COLORS") or ""
+    raw = _setting("ACCOUNT_SWITCH_USAGE_COLORS") or ""
     for part in raw.split(","):
         if "=" in part:
             key, value = part.split("=", 1)
