@@ -107,6 +107,10 @@ lands between the badge and the inset. Drop both lines if you want the badge
 hard against the edge.
 
 `herdr plugin list --plugin rcosteira.account-switch --json` reports the path.
+Note that an installed plugin's directory carries a content hash, so the path
+changes when the plugin updates and the badge goes quietly blank — herdr clears
+a command's value when it fails. A symlink you point at the current install, and
+name in the command instead, survives updates.
 The `badge` command prints one line and exits — herdr re-runs it on the
 interval, so this needs no daemon and no `[[startup]]` hook. It reads the
 credential store and nothing else: no socket, no writes. Naming a kind
