@@ -439,3 +439,11 @@ in rather than guessing.
 - herdr ≥ 0.8.0 (for the `[[startup]]` badge refresh)
 - Python 3 (stdlib only; uses `curses` for the picker)
 - macOS or Linux
+
+## The other herdr plugins
+
+Each installs on its own; they share nothing but an author.
+
+- [**herdr-idle-shell-badge**](https://github.com/rcosteira79/herdr-idle-shell-badge) — Badges idle agents that still have a background shell running, so one that *looks* done but left a process alive isn't mistaken for finished.
+- [**herdr-readpending**](https://github.com/rcosteira79/herdr-readpending) — Mark agents you started reading but haven't finished — a numbered badge plus a reorderable overlay queue that clears when you focus the agent.
+- [**herdr-autocontinue**](https://github.com/rcosteira79/herdr-autocontinue) — Watch agents for usage-limit walls, badge the countdown to the reset, and re-prompt the agents you armed once the window reopens.
