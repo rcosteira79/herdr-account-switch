@@ -94,7 +94,7 @@ in the tab bar instead and turn the pane token off:
 ```toml
 [ui]
 tab_bar_right = [
-  { type = "command", command = "python3 /path/to/account-switch/switcher.py badge claude", interval_seconds = 30, timeout_seconds = 5 },
+  { type = "command", command = "python3 /path/to/herdr-account-switch/switcher.py badge claude", interval_seconds = 30, timeout_seconds = 5 },
   { type = "text", text = "  " },
 ]
 tab_bar_right_separator = ""
@@ -125,7 +125,7 @@ the output — the same one-line `badge` command, no herdr involved:
 ```json
 {
   "type": "custom-command",
-  "commandPath": "python3 /path/to/account-switch/switcher.py badge claude",
+  "commandPath": "python3 /path/to/herdr-account-switch/switcher.py badge claude",
   "timeout": 2000
 }
 ```
@@ -161,7 +161,7 @@ For a `tab_bar_right` entry, set them inline on the command — that env is your
 to write, unlike the one herdr hands to plugin actions:
 
 ```toml
-command = "ACCOUNT_SWITCH_GLYPH=🔑 python3 /path/to/switcher.py badge claude"
+command = "ACCOUNT_SWITCH_GLYPH=🔑 python3 /path/to/herdr-account-switch/switcher.py badge claude"
 ```
 
 **2. Keybindings** — `herdr server reload-config` after editing these:
@@ -188,7 +188,7 @@ reports where the plugin is installed:
 [[keys.command]]
 key = "prefix+1"
 type = "shell"
-command = "python3 /path/to/account-switch/switcher.py switch claude work"
+command = "python3 /path/to/herdr-account-switch/switcher.py switch claude work"
 ```
 
 ## Usage
