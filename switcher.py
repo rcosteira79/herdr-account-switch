@@ -2337,6 +2337,11 @@ DISPATCH = {
 
 
 def main():
+    # Any invocation repoints the stable symlink, not just the startup hook.
+    # An update moves this directory, and herdr does not re-run startup hooks
+    # on install, so the link would otherwise stay stale until the next herdr
+    # start — long enough for the badge reading through it to disappear.
+    refresh_stable_link()
     if len(sys.argv) < 2 or sys.argv[1] not in DISPATCH:
         print(f"usage: switcher.py {{{'|'.join(DISPATCH)}}} [args]", file=sys.stderr)
         return 2
