@@ -35,6 +35,7 @@ import platform
 import re
 import subprocess
 import sys
+import urllib.error
 import urllib.request
 from datetime import datetime
 import time
@@ -977,13 +978,18 @@ def _clear_staged(kind, slug):
         pass
 
 
-def renew_profile(kind, profile):
+def renew_profile(kind, profile, force=False):
     """Renew one parked profile's tokens in place; returns its payload or None.
 
     Ordering is the whole point. Back up before going near the network, stage
     the reply the moment it lands, then rewrite the profile. From the moment the
     endpoint answers, the old refresh token is dead and the reply is the only
     usable pair that account has.
+
+    `force` renews a token the clock still calls valid. Both providers can
+    supersede a session — signing into another account on the same provider does
+    it — and the old access token keeps claiming a future expiry regardless. The
+    server is the authority, so a 401 asks for this.
     """
     with _Lock():
         current = get_profile(kind, profile["slug"]) or profile
@@ -996,7 +1002,7 @@ def renew_profile(kind, profile):
                     creds = json.loads(creds)
                 except ValueError:
                     return None
-            if not _due_for_renewal(_claude_auth(payload)[1]):
+            if not force and not _due_for_renewal(_claude_auth(payload)[1]):
                 return payload
             _backup(kind, payload)
             renewed = _renewed_claude((creds or {}).get("claudeAiOauth") or {})
@@ -1009,7 +1015,8 @@ def renew_profile(kind, profile):
         elif kind == "codex":
             auth = dict(payload.get("auth") or {})
             tokens = auth.get("tokens") or {}
-            if not _due_for_renewal(_jwt_expiry(tokens.get("access_token") or "")):
+            if not force and not _due_for_renewal(
+                    _jwt_expiry(tokens.get("access_token") or "")):
                 return payload
             _backup(kind, payload)
             renewed = _renewed_codex(tokens)
@@ -1106,16 +1113,34 @@ def usage_rows(kinds=None, refresh=True):
                     # kept fresh by the CLI, so that chain is left alone.
                     if USAGE_RENEW and not is_live:
                         payload = renew_profile(kind, profile) or payload
-                    windows = fetch_usage(kind, payload)
+                    try:
+                        windows = fetch_usage(kind, payload)
+                    except urllib.error.HTTPError as exc:
+                        # 401 on a token the clock still calls valid: the session
+                        # was superseded, which signing into another account on
+                        # the same provider does. Renew past the clock and retry
+                        # once — the server is the authority, not the expiry.
+                        if exc.code != 401 or is_live or not USAGE_RENEW:
+                            raise
+                        payload = renew_profile(kind, profile, force=True)
+                        if not payload:
+                            raise
+                        windows = fetch_usage(kind, payload)
                 except Exception as exc:
-                    # Say why. A silently empty row is indistinguishable from an
-                    # account that simply has no windows.
-                    problem = "%s: %s" % (type(exc).__name__, exc)
-                    windows = None
-                    if getattr(exc, "code", None) == 429:
+                    # Say why, briefly: this shares a narrow column with the
+                    # account name, and a truncated traceback tells nobody
+                    # anything.
+                    code = getattr(exc, "code", None)
+                    problem = {401: "needs re-login", 403: "refused",
+                               404: "no usage endpoint"}.get(code)
+                    if code == 429:
                         # Asked too often. Sit out, or every later call compounds it.
-                        problem = "rate limited — resting %ds" % int(USAGE_BACKOFF_S)
+                        problem = "rate limited"
                         _rest_usage(key, USAGE_BACKOFF_S)
+                    elif problem is None:
+                        problem = "unreachable" if isinstance(
+                            exc, urllib.error.URLError) else type(exc).__name__
+                    windows = None
             if windows:
                 state = "live"
                 _remember_usage(key, windows)
