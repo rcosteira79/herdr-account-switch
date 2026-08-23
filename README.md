@@ -362,15 +362,24 @@ you something, so every switch:
 
 1. takes an `flock`, so two switches (or a switch racing your own keybinding)
    can't interleave writes while a CLI is refreshing its token;
-2. **auto-saves the outgoing login** if it isn't in any profile yet — you can
+2. **asks the provider whether the saved login still works**, while the live
+   one is still in place. Reading the store back proves the write landed. It
+   says nothing about whether that account can still sign in, and the two come
+   apart exactly when it matters: a login the provider has retired installs
+   cleanly, reports success, and signs you out. Only a definitive refusal stops
+   a switch — the provider answering 401 to a token it has just issued, or
+   turning the refresh token down in words. Being offline, timing out and
+   getting rate limited prove nothing either way, and none of them block a
+   switch. Set `verify_switch = false` to skip the check;
+3. **auto-saves the outgoing login** if it isn't in any profile yet — you can
    never overwrite an account the plugin doesn't already have a copy of — and
    **refreshes its snapshot** if it is. The CLI keeps renewing the live tokens,
    so a profile saved hours ago holds older ones; parking the account without
    updating it can leave a copy that is no longer able to renew, and that costs
    a browser login to repair;
-3. writes a timestamped backup of it under `HERDR_PLUGIN_STATE_DIR/backups/`
+4. writes a timestamped backup of it under `HERDR_PLUGIN_STATE_DIR/backups/`
    (last 10 kept);
-4. reads the store back and compares the account identity, and **puts the
+5. reads the store back and compares the account identity, and **puts the
    previous login back** if the write didn't take.
 
 An account already logged in but never saved shows up in the picker as
@@ -401,6 +410,11 @@ usage_colors = "warn=magenta"
 # Renew a parked account's token so its usage can be read. Turning this off
 # leaves parked accounts showing their last-seen numbers with an age.
 usage_renew = false
+
+# Ask the provider whether a saved login still works before installing it.
+# Turning this off restores the old behaviour: a retired login installs
+# cleanly and signs you out.
+verify_switch = false
 ```
 
 The key is the variable below without its `ACCOUNT_SWITCH_` prefix, lowercased.
@@ -421,6 +435,7 @@ command, which is why they are the easy place to restyle the badge.
 | `ACCOUNT_SWITCH_GLYPH` | `👤` | the badge character |
 | `ACCOUNT_SWITCH_BADGE_FORMAT` | `{glyph} {name}` | badge layout; either field may be dropped |
 | `ACCOUNT_SWITCH_SEPARATOR` | ` · ` | between kinds, when `badge` prints more than one |
+| `ACCOUNT_SWITCH_VERIFY_SWITCH` | `1` | ask the provider whether a saved login still works before installing it |
 | `ACCOUNT_SWITCH_USAGE_RENEW` | `1` | renew a parked account's token so its usage can be read |
 | `ACCOUNT_SWITCH_USAGE_TTL_S` | `120` | how long a usage answer is reused |
 | `ACCOUNT_SWITCH_RENEW_MARGIN_S` | `300` | renew this far ahead of a token's expiry |
