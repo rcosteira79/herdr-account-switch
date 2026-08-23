@@ -35,6 +35,8 @@ import platform
 import re
 import subprocess
 import sys
+import urllib.request
+from datetime import datetime
 import time
 
 PLUGIN_ID = os.environ.get("HERDR_PLUGIN_ID", "rcosteira.account-switch")
@@ -59,6 +61,13 @@ def _flag(name, default=True):
     if raw is None:
         return default
     return raw.strip().lower() not in ("0", "false", "no", "off", "")
+
+
+def _num_env(name, default):
+    try:
+        return float(os.environ[name])
+    except (KeyError, ValueError):
+        return default
 
 
 NOTIFY = _flag("ACCOUNT_SWITCH_NOTIFY")
@@ -585,6 +594,520 @@ def next_profile(kind):
     return switch(kind, profiles[idx]["slug"])
 
 
+# ---- usage ----------------------------------------------------------------
+#
+# Both harnesses publish what is left of the current account's allowance. The
+# numbers come from the account, so they hold whatever tool is spending it.
+#
+# Unofficial endpoints: they can change or vanish, so every read fails soft and
+# the picker works without them.
+
+CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
+CLAUDE_USAGE_BETA = "oauth-2025-04-20"
+CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
+USAGE_CACHE = os.path.join(STATE_DIR, "usage-cache.json")
+USAGE_TTL_S = _num_env("ACCOUNT_SWITCH_USAGE_TTL_S", 120.0)
+USAGE_TIMEOUT_S = _num_env("ACCOUNT_SWITCH_USAGE_TIMEOUT_S", 8.0)
+# How long to leave an account alone after it answers 429.
+USAGE_BACKOFF_S = _num_env("ACCOUNT_SWITCH_USAGE_BACKOFF_S", 300.0)
+BAR_WIDTH = int(_num_env("ACCOUNT_SWITCH_USAGE_BAR_WIDTH", 10))
+_BAR_CHARS = os.environ.get("ACCOUNT_SWITCH_USAGE_BAR") or "█░"
+BAR_FULL = _BAR_CHARS[0]
+BAR_EMPTY = _BAR_CHARS[1] if len(_BAR_CHARS) > 1 else " "
+
+
+def _thresholds():
+    raw = os.environ.get("ACCOUNT_SWITCH_USAGE_THRESHOLDS") or "60,85"
+    try:
+        warn, crit = (float(x) for x in raw.split(",", 1))
+        return warn, crit
+    except ValueError:
+        return 60.0, 85.0
+
+
+WARN_AT, CRIT_AT = _thresholds()
+
+# Named colours, resolved to curses constants when the overlay opens and to
+# ANSI codes for the one-line form.
+COLOR_NAMES = {
+    "black": 0, "red": 1, "green": 2, "yellow": 3,
+    "blue": 4, "magenta": 5, "cyan": 6, "white": 7,
+}
+
+
+def _color_map():
+    out = {"ok": "green", "warn": "yellow", "crit": "red", "stale": "blue"}
+    raw = os.environ.get("ACCOUNT_SWITCH_USAGE_COLORS") or ""
+    for part in raw.split(","):
+        if "=" in part:
+            key, value = part.split("=", 1)
+            key, value = key.strip().lower(), value.strip().lower()
+            if key in out and value in COLOR_NAMES:
+                out[key] = value
+    return out
+
+
+USAGE_COLORS = _color_map()
+
+
+def severity_of(percent):
+    if percent is None:
+        return "stale"
+    if percent >= CRIT_AT:
+        return "crit"
+    if percent >= WARN_AT:
+        return "warn"
+    return "ok"
+
+
+def bar_for(percent, width=None):
+    width = width or BAR_WIDTH
+    if percent is None:
+        return BAR_EMPTY * width
+    filled = int(round(max(0.0, min(100.0, percent)) / 100.0 * width))
+    return BAR_FULL * filled + BAR_EMPTY * (width - filled)
+
+
+def _http_json(url, headers):
+    request = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(request, timeout=USAGE_TIMEOUT_S) as response:
+        return json.load(response)
+
+
+def _iso_epoch(text):
+    if isinstance(text, (int, float)):
+        return float(text)
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(str(text).replace("Z", "+00:00")).timestamp()
+    except (ValueError, TypeError):
+        return None
+
+
+def _jwt_expiry(token):
+    """`exp` out of a JWT — only used to skip a token already known to be dead."""
+    try:
+        return float(_jwt_claims(token).get("exp"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _claude_auth(payload):
+    """(token, expires_at) from a claude credential payload."""
+    creds = (payload or {}).get("credentials")
+    if isinstance(creds, str):
+        try:
+            creds = json.loads(creds)
+        except ValueError:
+            creds = None
+    oauth = (creds or {}).get("claudeAiOauth") or {}
+    token = oauth.get("accessToken")
+    expires = oauth.get("expiresAt")
+    if isinstance(expires, (int, float)) and expires > 10 ** 11:
+        expires = expires / 1000.0  # milliseconds
+    return token, expires
+
+
+def _codex_auth(payload):
+    """(token, account_id, expires_at) from a codex auth payload."""
+    auth = (payload or {}).get("auth") or {}
+    tokens = auth.get("tokens") or {}
+    token = tokens.get("access_token")
+    return token, tokens.get("account_id"), _jwt_expiry(token or "")
+
+
+def _scoped_label(entry):
+    """"weekly_scoped" says nothing; the scope names the model it applies to."""
+    label = str(entry.get("kind") or entry.get("group") or "window")
+    scope = entry.get("scope") or {}
+    model = (scope.get("model") or {}).get("display_name")
+    if not model:
+        return label
+    return "%s %s" % (label.replace("_scoped", ""), model)
+
+
+def _claude_windows(body):
+    out = []
+    for entry in (body or {}).get("limits") or []:
+        if not isinstance(entry, dict):
+            continue
+        out.append({
+            "label": _scoped_label(entry),
+            "percent": entry.get("percent"),
+            "resets_at": _iso_epoch(entry.get("resets_at")),
+            "blocked": None,
+            # Which window is currently the one that would stop you.
+            "binding": bool(entry.get("is_active")),
+        })
+    if out:
+        return out
+    for name in ("five_hour", "seven_day"):
+        block = (body or {}).get(name)
+        if isinstance(block, dict):
+            out.append({
+                "label": name,
+                "percent": block.get("utilization"),
+                "resets_at": _iso_epoch(block.get("resets_at")),
+                "blocked": None,
+                "binding": False,
+            })
+    return out
+
+
+def _codex_windows(body):
+    rate = (body or {}).get("rate_limit") or {}
+    reached = rate.get("limit_reached")
+    out = []
+    for name in ("primary_window", "secondary_window"):
+        window = rate.get(name)
+        if not isinstance(window, dict):
+            continue
+        seconds = window.get("limit_window_seconds")
+        hours = (seconds or 0) / 3600.0
+        # Name it for what it is, so it reads the same as the claude rows.
+        if hours >= 24 * 6:
+            label = "weekly"
+        elif hours >= 24:
+            label = "%gd" % round(hours / 24.0, 1)
+        elif hours:
+            label = "%gh" % round(hours, 1)
+        else:
+            label = name.split("_")[0]
+        resets = window.get("reset_at")
+        if resets is None and window.get("reset_after_seconds") is not None:
+            resets = time.time() + window["reset_after_seconds"]
+        out.append({
+            "label": label,
+            "percent": window.get("used_percent"),
+            "resets_at": _iso_epoch(resets),
+            "seconds": seconds or None,
+            # codex says outright whether it is blocked; nothing to infer.
+            "blocked": bool(reached) if reached is not None else None,
+            "binding": False,
+        })
+    return out
+
+
+# ---- token renewal --------------------------------------------------------
+#
+# A parked profile's access token has usually expired, so its usage cannot be
+# read without renewing it first. Renewing SPENDS the stored refresh token: the
+# reply carries a fresh pair and the old one dies. Lose that reply and the
+# account needs a browser login, so the new pair is written into the profile
+# before it is used for anything else. This mirrors what the CLIs themselves do
+# on every expiry, and what openusage does to keep its panel current.
+
+CLAUDE_RENEW_URL = "https://platform.claude.com/v1/oauth/token"
+CLAUDE_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+CODEX_RENEW_URL = "https://auth.openai.com/oauth/token"
+CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
+# Renew this far ahead of expiry rather than after it, so a token cannot die
+# mid-read. openusage uses the same five minutes.
+RENEW_MARGIN_S = _num_env("ACCOUNT_SWITCH_RENEW_MARGIN_S", 300.0)
+USAGE_RENEW = _flag("ACCOUNT_SWITCH_USAGE_RENEW", default=True)
+
+
+# The token endpoint answers the CLI's own HTTP client, and refuses a default
+# urllib User-Agent, so the request is shaped like the one the CLI makes.
+TOKEN_USER_AGENT = "axios/1.15.2"
+TOKEN_ACCEPT = "application/json, text/plain, */*"
+# The endpoint is order-sensitive about scopes; this is the order the CLI sends.
+CANONICAL_SCOPES = [
+    "org:create_api_key", "user:profile", "user:inference",
+    "user:sessions:claude_code", "user:mcp_servers", "user:file_upload",
+]
+
+
+def _canonical_scopes(scopes):
+    present = [s for s in (scopes or []) if s]
+    ordered = [s for s in CANONICAL_SCOPES if s in present]
+    ordered += [s for s in present if s not in CANONICAL_SCOPES]
+    return " ".join(ordered)
+
+
+def _post_json(url, body):
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(body).encode(),
+        headers={
+            "Content-Type": "application/json",
+            "Accept": TOKEN_ACCEPT,
+            "User-Agent": TOKEN_USER_AGENT,
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=USAGE_TIMEOUT_S) as response:
+        return json.load(response)
+
+
+def _renewed_claude(oauth):
+    """A renewed claudeAiOauth block, or None. Spends the stored refresh token."""
+    stored = (oauth or {}).get("refreshToken")
+    if not stored:
+        return None
+    scopes = oauth.get("scopes") or []
+    body = _post_json(CLAUDE_RENEW_URL, {
+        "grant_type": "refresh_token",
+        "refresh_token": stored,
+        "client_id": CLAUDE_CLIENT_ID,
+        "scope": _canonical_scopes(scopes) or _canonical_scopes(CANONICAL_SCOPES[1:]),
+    })
+    access = body.get("access_token")
+    if not access:
+        return None
+    out = dict(oauth)
+    out["accessToken"] = access
+    # The reply rotates the refresh token. Keep the old one only when none came
+    # back, because dropping a live one strands the account.
+    if body.get("refresh_token"):
+        out["refreshToken"] = body["refresh_token"]
+    if body.get("expires_in"):
+        out["expiresAt"] = int((time.time() + float(body["expires_in"])) * 1000)
+    return out
+
+
+def _renewed_codex(tokens):
+    """A renewed codex tokens block, or None. Spends the stored refresh token."""
+    stored = (tokens or {}).get("refresh_token")
+    if not stored:
+        return None
+    body = _post_json(CODEX_RENEW_URL, {
+        "grant_type": "refresh_token",
+        "refresh_token": stored,
+        "client_id": CODEX_CLIENT_ID,
+    })
+    access = body.get("access_token")
+    if not access:
+        return None
+    out = dict(tokens)
+    out["access_token"] = access
+    if body.get("refresh_token"):
+        out["refresh_token"] = body["refresh_token"]
+    if body.get("id_token"):
+        out["id_token"] = body["id_token"]
+    return out
+
+
+def _due_for_renewal(expires_at):
+    return expires_at is not None and expires_at - time.time() <= RENEW_MARGIN_S
+
+
+STAGED_DIR = os.path.join(STATE_DIR, "rotated")
+
+
+def _staged_path(kind, slug):
+    return os.path.join(STAGED_DIR, "%s-%s.json" % (kind, slug))
+
+
+def _stage(kind, slug, payload):
+    """Park a rotated payload on disk the instant it exists.
+
+    Between the endpoint answering and the profile being rewritten, the reply is
+    the only usable pair that account has. Writing it here first means a crash
+    in that window costs a stale profile, not a login.
+    """
+    _secure_dir(STAGED_DIR)
+    _write_json_secret(_staged_path(kind, slug), payload)
+
+
+def _adopt_staged(kind, slug, payload):
+    """Take up a payload staged by a run that died before it could finish."""
+    staged = _read_json(_staged_path(kind, slug))
+    return staged if staged else payload
+
+
+def _clear_staged(kind, slug):
+    try:
+        os.remove(_staged_path(kind, slug))
+    except OSError:
+        pass
+
+
+def renew_profile(kind, profile):
+    """Renew one parked profile's tokens in place; returns its payload or None.
+
+    Ordering is the whole point. Back up before going near the network, stage
+    the reply the moment it lands, then rewrite the profile. From the moment the
+    endpoint answers, the old refresh token is dead and the reply is the only
+    usable pair that account has.
+    """
+    with _Lock():
+        current = get_profile(kind, profile["slug"]) or profile
+        slug = current["slug"]
+        payload = _adopt_staged(kind, slug, current.get("payload") or {})
+        if kind == "claude":
+            creds = payload.get("credentials")
+            if isinstance(creds, str):
+                try:
+                    creds = json.loads(creds)
+                except ValueError:
+                    return None
+            if not _due_for_renewal(_claude_auth(payload)[1]):
+                return payload
+            _backup(kind, payload)
+            renewed = _renewed_claude((creds or {}).get("claudeAiOauth") or {})
+            if not renewed:
+                return None
+            creds = dict(creds or {})
+            creds["claudeAiOauth"] = renewed
+            payload = dict(payload)
+            payload["credentials"] = creds
+        elif kind == "codex":
+            auth = dict(payload.get("auth") or {})
+            tokens = auth.get("tokens") or {}
+            if not _due_for_renewal(_jwt_expiry(tokens.get("access_token") or "")):
+                return payload
+            _backup(kind, payload)
+            renewed = _renewed_codex(tokens)
+            if not renewed:
+                return None
+            auth["tokens"] = renewed
+            auth["last_refresh"] = datetime.now().isoformat()
+            payload = dict(payload)
+            payload["auth"] = auth
+        else:
+            return None
+        _stage(kind, slug, payload)
+        current = dict(current)
+        current["payload"] = payload
+        write_profile(current)
+        _clear_staged(kind, slug)
+    return payload
+
+
+def fetch_usage(kind, payload):
+    """Windows for one account, or None when it cannot be read."""
+    if kind == "claude":
+        token, expires = _claude_auth(payload)
+        if not token or (expires and expires < time.time()):
+            return None
+        return _claude_windows(_http_json(CLAUDE_USAGE_URL, {
+            "Authorization": "Bearer %s" % token,
+            "anthropic-beta": CLAUDE_USAGE_BETA,
+        }))
+    if kind == "codex":
+        token, account_id, expires = _codex_auth(payload)
+        if not token or (expires and expires < time.time()):
+            return None
+        return _codex_windows(_http_json(CODEX_USAGE_URL, {
+            "Authorization": "Bearer %s" % token,
+            "chatgpt-account-id": account_id or "",
+            "User-Agent": "codex-cli",
+            "Accept": "application/json",
+        }))
+    return None
+
+
+def _usage_cache():
+    return _read_json(USAGE_CACHE) or {}
+
+
+def _remember_usage(key, windows):
+    cache = _usage_cache()
+    entry = cache.get(key) or {}
+    entry.update({"at": time.time(), "windows": windows})
+    entry.pop("retry_after", None)
+    cache[key] = entry
+    _secure_dir(STATE_DIR)
+    _write_json_secret(USAGE_CACHE, cache)
+
+
+def _rest_usage(key, seconds):
+    """Stop asking for a while. Keeps whatever windows were last read."""
+    cache = _usage_cache()
+    entry = cache.get(key) or {}
+    entry["retry_after"] = time.time() + seconds
+    cache[key] = entry
+    _secure_dir(STATE_DIR)
+    _write_json_secret(USAGE_CACHE, cache)
+
+
+def usage_rows(kinds=None, refresh=True):
+    """One row per saved profile: its windows, and how current they are.
+
+    A parked profile usually holds an expired token, so its numbers come from
+    the last time it was live. That is said out loud rather than hidden: the
+    row carries `age`, and `state` is live, cached or unknown.
+    """
+    rows = []
+    cache = _usage_cache()
+    for kind in kinds or KIND_ORDER:
+        backend = BACKENDS[kind]
+        live = backend.read_live()
+        live_fp = _fingerprint(backend.identity(live)) if live else None
+        for profile in list_profiles(kind):
+            key = "%s:%s" % (kind, profile["slug"])
+            is_live = bool(live_fp) and profile.get("fingerprint") == live_fp
+            payload = live if is_live else profile.get("payload")
+            windows, state, problem = None, "unknown", None
+            entry = cache.get(key) or {}
+            # The endpoint rate-limits, so the live account observes the cache
+            # too. It used to refetch on every call, which is what earns a 429.
+            stale = (time.time() - (entry.get("at") or 0)) > USAGE_TTL_S
+            resting = time.time() < (entry.get("retry_after") or 0)
+            if refresh and stale and not resting:
+                try:
+                    # A parked account's token has usually expired, so renewing
+                    # is what makes its numbers readable at all. The live one is
+                    # kept fresh by the CLI, so that chain is left alone.
+                    if USAGE_RENEW and not is_live:
+                        payload = renew_profile(kind, profile) or payload
+                    windows = fetch_usage(kind, payload)
+                except Exception as exc:
+                    # Say why. A silently empty row is indistinguishable from an
+                    # account that simply has no windows.
+                    problem = "%s: %s" % (type(exc).__name__, exc)
+                    windows = None
+                    if getattr(exc, "code", None) == 429:
+                        # Asked too often. Sit out, or every later call compounds it.
+                        problem = "rate limited — resting %ds" % int(USAGE_BACKOFF_S)
+                        _rest_usage(key, USAGE_BACKOFF_S)
+            if windows:
+                state = "live"
+                _remember_usage(key, windows)
+                at = time.time()
+            elif entry.get("windows"):
+                windows, state, at = entry["windows"], "cached", entry.get("at")
+            else:
+                windows, at = [], None
+            rows.append({
+                "kind": kind,
+                "slug": profile["slug"],
+                "label": profile["label"],
+                "active": is_live,
+                "state": state,
+                "at": at,
+                "age": (time.time() - at) if at else None,
+                "windows": windows,
+                "problem": problem,
+            })
+    return rows
+
+
+def _left(seconds):
+    if seconds is None:
+        return "—"
+    seconds = int(seconds)
+    if seconds <= 0:
+        return "now"
+    days, rest = divmod(seconds, 86400)
+    hours, minutes = divmod(rest // 60, 60)
+    if days:
+        return "%dd%02dh" % (days, hours)
+    if hours:
+        return "%dh%02d" % (hours, minutes)
+    return "%dm" % minutes
+
+
+def _age(seconds):
+    if seconds is None:
+        return "never read"
+    if seconds < 60:
+        return "just now"
+    return "%s ago" % _left(seconds)
+
+
 # ---- badges ---------------------------------------------------------------
 
 def account_labels(kinds=None):
@@ -720,6 +1243,18 @@ def cmd_open(argv):
     return res.returncode
 
 
+def cmd_open_usage(argv):
+    res = herdr(
+        "plugin", "pane", "open",
+        "--plugin", PLUGIN_ID,
+        "--entrypoint", "usage",
+        "--placement", "overlay",
+    )
+    if res.returncode != 0:
+        sys.stderr.write(res.stderr or "account-switch: failed to open usage\n")
+    return res.returncode
+
+
 def cmd_next(argv):
     kind = resolve_kind(argv[0] if argv else None)
     print(next_profile(kind))
@@ -822,6 +1357,150 @@ def cmd_list(argv):
     return 0
 
 
+def _usage_pairs(curses):
+    """Severity name -> curses attribute, from the configured palette."""
+    pairs = {}
+    if not curses.has_colors():
+        return pairs
+    curses.start_color()
+    try:
+        curses.use_default_colors()
+    except curses.error:
+        pass
+    for index, (name, colour) in enumerate(USAGE_COLORS.items(), start=1):
+        try:
+            curses.init_pair(index, COLOR_NAMES[colour], -1)
+            pairs[name] = curses.color_pair(index)
+        except curses.error:
+            pairs[name] = 0
+    return pairs
+
+
+def cmd_usage_ui(argv):
+    """Coloured usage panel: every saved profile, every window it reports."""
+    import curses
+
+    def run(stdscr):
+        curses.curs_set(0)
+        pairs = _usage_pairs(curses)
+        # Reading two accounts is a network round trip, so refresh on a timer
+        # rather than on every keypress.
+        stdscr.timeout(2000)
+        rows, fetched = usage_rows(), time.time()
+        while True:
+            stdscr.erase()
+            height, width = stdscr.getmaxyx()
+            stdscr.addnstr(0, 0, "USAGE", width - 1, curses.A_BOLD)
+            stdscr.addnstr(
+                1, 0, "r refresh · q quit · read %s"
+                % _age(time.time() - fetched), width - 1, curses.A_DIM,
+            )
+            y = 3
+            for kind in KIND_ORDER:
+                mine = [r for r in rows if r["kind"] == kind]
+                if not mine or y >= height - 1:
+                    continue
+                stdscr.addnstr(y, 0, BACKENDS[kind].title, width - 1,
+                               curses.A_BOLD | curses.A_UNDERLINE)
+                y += 1
+                for row in mine:
+                    if y >= height - 1:
+                        break
+                    head = "%s %s" % ("●" if row["active"] else " ", row["label"])
+                    if row["state"] != "live":
+                        head += "   %s" % _age(row["age"])
+                    stdscr.addnstr(y, 2, head, width - 3,
+                                   curses.A_BOLD if row["active"] else curses.A_DIM)
+                    y += 1
+                    if not row["windows"]:
+                        stdscr.addnstr(y, 6, "never read", width - 7, curses.A_DIM)
+                        y += 1
+                    for window in row["windows"]:
+                        if y >= height - 1:
+                            break
+                        percent = window.get("percent")
+                        live = row["state"] == "live"
+                        sev = severity_of(percent if live else None)
+                        resets = window.get("resets_at")
+                        left = _left(resets - time.time()) if resets else "—"
+                        attr = pairs.get(sev, 0) | (0 if live else curses.A_DIM)
+                        stdscr.addnstr(
+                            y, 6,
+                            "%-14s %s %4s%%  %s" % (
+                                window.get("label", "window"),
+                                bar_for(percent),
+                                "?" if percent is None else round(percent),
+                                left,
+                            ),
+                            width - 7, attr,
+                        )
+                        y += 1
+                y += 1
+            stdscr.refresh()
+            try:
+                key = stdscr.getch()
+            except KeyboardInterrupt:
+                return
+            if key in (ord("q"), 27):
+                return
+            if key == ord("r"):
+                rows, fetched = usage_rows(), time.time()
+
+    curses.wrapper(run)
+    return 0
+
+
+ANSI_OFF = "\033[0m"
+
+
+def _ansi(text, severity, enabled):
+    """Colour by the same palette the overlay uses, so both agree."""
+    if not enabled:
+        return text
+    name = USAGE_COLORS.get(severity)
+    if name is None:
+        return text
+    return "\033[%dm%s%s" % (30 + COLOR_NAMES[name], text, ANSI_OFF)
+
+
+def cmd_usage(argv):
+    """What is left on every saved account, for both harnesses."""
+    if "--json" in argv:
+        print(json.dumps(usage_rows(), indent=2))
+        return 0
+    color = "--color" in argv
+    rows = usage_rows()
+    if not rows:
+        print("no profiles saved yet — run the save action")
+        return 1
+    for kind in KIND_ORDER:
+        mine = [r for r in rows if r["kind"] == kind]
+        if not mine:
+            continue
+        print(BACKENDS[kind].title)
+        for row in mine:
+            mark = "●" if row["active"] else " "
+            note = "" if row["state"] == "live" else "  (%s)" % _age(row["age"])
+            print("  %s %-14s%s" % (mark, row["label"], note))
+            if not row["windows"]:
+                print("      %s" % (row.get("problem") or
+                                    ("never read" if row["state"] == "unknown"
+                                     else "no windows reported")))
+            for window in row["windows"]:
+                percent = window.get("percent")
+                sev = severity_of(percent if row["state"] == "live" else None)
+                left = window.get("resets_at")
+                left = _left(left - time.time()) if left else "—"
+                text = "%-14s %s %5s%%  resets %s" % (
+                    window.get("label", "window"),
+                    bar_for(percent),
+                    "?" if percent is None else round(percent),
+                    left,
+                )
+                print("      " + _ansi(text, sev, color))
+    return 0
+
+
 def cmd_stamp(argv):
     stamp_badges()
     warn_if_unwired()
@@ -876,12 +1555,168 @@ def _rows():
     return rows
 
 
-def _profile_line(kind, p, width):
+LABEL_W = 16
+USAGE_W = 20
+# Where the usage column starts: " " + mark + " " + label + " ".
+USAGE_COL = 3 + LABEL_W + 1
+
+
+def _profile_line(kind, p, width, usage=None):
     backend = BACKENDS[kind]
     mark = "●" if p.get("_active") else " "  # ●
     desc = backend.describe(p.get("identity") or {})
-    line = f" {mark} {p['label']:<16} {desc}"
+    label = str(p["label"])[:LABEL_W]
+    if usage is None:
+        line = " %s %-*s %s" % (mark, LABEL_W, label, desc)
+    else:
+        line = " %s %-*s %-*s %s" % (
+            mark, LABEL_W, label, USAGE_W, usage[:USAGE_W], desc)
     return line[: max(0, width - 1)]
+
+
+def binding_window(row):
+    """The window closest to stopping you: the fullest one, then the soonest.
+
+    The API marks one `is_active`; that is preferred when it is there, since it
+    is the account's own answer rather than a guess from the numbers.
+    """
+    windows = [w for w in shown_windows(row)
+               if isinstance(w.get("percent"), (int, float))]
+    if not windows:
+        return None
+    marked = [w for w in windows if w.get("binding")]
+    pool = marked or windows
+    return max(pool, key=lambda w: (w["percent"], -(w.get("resets_at") or 0)))
+
+
+FIVE_HOURS = 5 * 3600
+SEVEN_DAYS = 7 * 86400
+
+def _centred(text, width):
+    """A column title sitting over the middle of its column."""
+    if width <= len(text):
+        return text[:width]
+    pad = width - len(text)
+    return " " * (pad // 2) + text + " " * (pad - pad // 2)
+
+
+# One row per window, and the header built from the same widths so the two
+# cannot drift apart.
+DETAIL_FMT = "%-9s %3s%%  %s  %s"
+DETAIL_HEAD = "%s %s  %s  %s" % (
+    _centred("window", 9), _centred("used", 4), _centred("", 10), "at this rate")
+# The collapsed view's one-line summary: bar, percent, time to reset.
+SUMMARY_FMT = "%s %3d%% %s"
+SUMMARY_HEAD = "%s %s %s" % (
+    _centred("", 8), _centred("used", 4), "resets in")
+
+
+def window_seconds(window):
+    """How long this window runs, so elapsed time can be worked out."""
+    if window.get("seconds"):
+        return window["seconds"]
+    label = (window.get("label") or "").lower()
+    if label in ("session", "five_hour"):
+        return FIVE_HOURS
+    if label.startswith("weekly") or label.startswith("seven_day"):
+        return SEVEN_DAYS
+    # A duration used as a name, e.g. codex's "7d" / "168h" from an older cache.
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)([dh])", label)
+    if match:
+        return float(match.group(1)) * (86400 if match.group(2) == "d" else 3600)
+    return None
+
+
+def window_name(label):
+    """The short name to show, rather than the API's key."""
+    text = str(label or "")
+    lowered = text.lower()
+    if lowered in ("session", "five_hour"):
+        return "Session"
+    if lowered in ("weekly_all", "seven_day", "weekly"):
+        return "Weekly"
+    if lowered.startswith("weekly "):
+        return text.split(" ", 1)[1]        # the model's own name, e.g. Fable
+    return text
+
+
+def projection(window):
+    """Where this window lands by its reset, at the rate it is being spent.
+
+    This is the number that decides whether to switch accounts now: 66% used is
+    fine with a day left and a problem with five. The reset comes along with it,
+    because "limit in 1d12h" means nothing without knowing what it is racing.
+    """
+    percent, resets = window.get("percent"), window.get("resets_at")
+    if not resets:
+        return "—"
+    until = _left(resets - time.time())
+    total = window_seconds(window)
+    left = resets - time.time()
+    elapsed = (total - left) if total else None
+    if percent is not None and percent >= 100:
+        return "spent (resets in %s)" % until
+    # A window minutes old gives a rate wild enough to claim the limit is
+    # imminent, so say nothing until enough of it has run to mean something.
+    settled = elapsed is not None and elapsed >= max(600.0, (total or 0) * 0.05)
+    if percent is None or not settled or percent <= 0 or left <= 0:
+        return "resets in %s" % until
+    rate = percent / elapsed
+    landing = percent + rate * left
+    if landing < 100:
+        return "~%d%% left (resets in %s)" % (round(100 - landing), until)
+    return "limit in %s (resets in %s)" % (_left((100 - percent) / rate), until)
+
+
+def shown_windows(row):
+    """Codex reports one long window worth showing; claude reports three."""
+    windows = list((row or {}).get("windows") or [])
+    if (row or {}).get("kind") == "codex" and len(windows) > 1:
+        return [max(windows, key=lambda w: window_seconds(w) or 0)]
+    return windows
+
+
+def usage_detail(row):
+    """[(text, severity)] — one line per window, for the expanded view."""
+    if not row:
+        return []
+    live = row.get("state") == "live"
+    out = []
+    for window in shown_windows(row):
+        percent = window.get("percent")
+        out.append((
+            DETAIL_FMT % (
+                window_name(window.get("label")),
+                "?" if percent is None else round(percent),
+                bar_for(percent, 10),
+                projection(window),
+            ),
+            severity_of(percent if live else None),
+        ))
+    if not out:
+        out.append(((row.get("problem") or "no windows read"), "stale"))
+    return out
+
+
+def usage_summary(row):
+    """"How much is left" for one profile row, sized for the picker column.
+
+    Only the binding window: which window that is, and the rest of them, is
+    what the usage panel is for.
+    """
+    if row is None:
+        return "", "stale"
+    if row.get("state") == "unknown":
+        return (row.get("problem") or "no usage read")[:USAGE_W], "stale"
+    window = binding_window(row)
+    if not window:
+        return "no windows", "stale"
+    live = row.get("state") == "live"
+    percent = window["percent"]
+    resets = window.get("resets_at")
+    left = _left(resets - time.time()) if resets else "—"
+    text = SUMMARY_FMT % (bar_for(percent, 8), round(percent), left)
+    return text[:USAGE_W], severity_of(percent if live else None)
 
 
 def _center_win(stdscr, height, width):
@@ -963,11 +1798,16 @@ def cmd_ui(argv):
 
     def run(stdscr):
         curses.curs_set(0)
+        pairs = _usage_pairs(curses)
         # Slow refresh on purpose: each tick re-reads the credential store, and
         # on macOS that is a Keychain lookup per agent kind.
         stdscr.timeout(5000)
         sel = 0
         message = ""
+        details = False
+        # Read once on open, then from cache: the endpoint rate-limits, and the
+        # picker's own tick is far faster than usage changes.
+        usage = {"%s:%s" % (r["kind"], r["slug"]): r for r in usage_rows()}
         while True:
             rows = _rows()
             pickable = [
@@ -980,12 +1820,25 @@ def cmd_ui(argv):
             h, w = stdscr.getmaxyx()
             stdscr.addnstr(0, 0, "ACCOUNTS", w - 1, curses.A_BOLD)
             if h > 1:
+                # Padded: the text shortens when details are on, and addnstr
+                # leaves whatever the longer version wrote behind it.
                 stdscr.addnstr(
                     1, 0,
-                    "j/k select · enter switch · s save current · r rename · x delete · q quit",
+                    ("j/k select · enter switch · s save · r rename · x delete · "
+                     "d %s · u reread · q quit"
+                     % ("hide" if details else "details")).ljust(w - 1),
                     w - 1, curses.A_DIM,
                 )
-            y = 3
+            # Column titles, so the numbers are not left to be guessed at.
+            if h > 2:
+                # Three spaces first: the profile line spends them on " ● ".
+                head = "   %s %s" % (
+                    _centred("account", LABEL_W),
+                    DETAIL_HEAD if details else SUMMARY_HEAD,
+                )
+                stdscr.addnstr(2, 0, head.ljust(w - 1), w - 1,
+                               curses.A_DIM | curses.A_UNDERLINE)
+            y = 4
             for i, (kind_row, kind, body) in enumerate(rows):
                 if y >= h - 1:
                     break
@@ -997,10 +1850,28 @@ def cmd_ui(argv):
                     stdscr.addnstr(y, 0, body.ljust(w - 1), w - 1, attr)
                 else:
                     is_sel = pickable and i == pickable[sel]
-                    attr = curses.A_REVERSE if is_sel else curses.A_NORMAL
-                    stdscr.addnstr(
-                        y, 0, _profile_line(kind, body, w).ljust(w - 1), w - 1, attr
-                    )
+                    row = usage.get("%s:%s" % (kind, body["slug"]))
+                    # Expanded, the windows below carry the numbers, so the
+                    # account line would only repeat one of them.
+                    text, sev = ("", "ok") if details else usage_summary(row)
+                    line = _profile_line(kind, body, w, text).ljust(w - 1)
+                    stdscr.addnstr(y, 0, line, w - 1,
+                                   curses.A_REVERSE if is_sel else curses.A_NORMAL)
+                    # Repaint just the usage column in its severity colour, so
+                    # the palette reads as "how full is this account", nothing
+                    # else. The column is at a fixed offset, not searched for.
+                    if text and not is_sel and w > USAGE_COL + 1:
+                        stdscr.addnstr(y, USAGE_COL, text[: w - 1 - USAGE_COL],
+                                       w - 1 - USAGE_COL, pairs.get(sev, 0))
+                    if details:
+                        for line_text, line_sev in usage_detail(row):
+                            y += 1
+                            if y >= h - 1:
+                                break
+                            stdscr.addnstr(y, USAGE_COL, line_text,
+                                           w - 1 - USAGE_COL,
+                                           pairs.get(line_sev, 0))
+                        y += 1  # a blank line, or the accounts run together
                 y += 1
             if message and h > 1:
                 stdscr.addnstr(h - 1, 0, message[: w - 1], w - 1, curses.A_BOLD)
@@ -1057,6 +1928,16 @@ def cmd_ui(argv):
                     profile.pop("_active", None)
                     write_profile(profile)
                     message = f"renamed to {name}"
+            elif ch == ord("d"):
+                details = not details
+            elif ch == ord("u"):
+                message = "reading usage…"
+                stdscr.addnstr(h - 1, 0, message.ljust(w - 1), w - 1, curses.A_BOLD)
+                stdscr.refresh()
+                usage = {"%s:%s" % (r["kind"], r["slug"]): r for r in usage_rows()}
+                stale = [r["label"] for r in usage.values() if r["state"] != "live"]
+                message = ("usage read" if not stale
+                           else "usage read; cached for " + ", ".join(stale))
             elif ch == ord("x") and selected:
                 profile = selected[2]
                 # Deleting a profile removes this plugin's copy, never the
@@ -1378,6 +2259,9 @@ DISPATCH = {
     "stamp": cmd_stamp,
     "badge": cmd_badge,
     "list": cmd_list,
+    "usage": cmd_usage,
+    "usage-ui": cmd_usage_ui,
+    "open-usage": cmd_open_usage,
 }
 
 

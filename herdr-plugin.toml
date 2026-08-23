@@ -55,8 +55,21 @@ title = "Accounts: status"
 contexts = ["global"]
 command = ["python3", "switcher.py", "status"]
 
+# What is left on every saved account, both agent kinds, in one panel.
+[[actions]]
+id = "usage"
+title = "Accounts: open usage"
+contexts = ["global"]
+command = ["python3", "switcher.py", "open-usage"]
+
 [[panes]]
 id = "picker"
 title = "Accounts"
 command = ["python3", "switcher.py", "ui"]
+placement = "overlay"
+
+[[panes]]
+id = "usage"
+title = "Usage"
+command = ["python3", "switcher.py", "usage-ui"]
 placement = "overlay"

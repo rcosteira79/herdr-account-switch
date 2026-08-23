@@ -191,6 +191,72 @@ type = "shell"
 command = "python3 /path/to/account-switch/switcher.py switch claude work"
 ```
 
+## Usage
+
+What is left on every account you have saved, both agent kinds, in one panel:
+
+```sh
+herdr plugin action invoke usage --plugin rcosteira.account-switch
+```
+
+```
+Claude Code
+  ● main          Session    16%  ██░░░░░░░░  limit in 2h10 (resets in 10m)
+                  Weekly     65%  ███████░░░  limit in 1d12h (resets in 4d02h)
+                  Fable       6%  █░░░░░░░░░  ~88% left (resets in 4d02h)
+    spare         Session     0%  ░░░░░░░░░░  —
+                  Weekly      2%  ░░░░░░░░░░  ~92% left (resets in 5d07h)
+Codex
+  ● main          Weekly     42%  ████░░░░░░  ~34% left (resets in 4d01h)
+```
+
+`●` is the account that is live. The point of listing the others is the case
+above: `main` runs out before its session renews, and `spare` has room now.
+
+`r` re-reads, `q` closes. `switcher.py usage` prints the same thing as text
+(`--color` for ANSI, `--json` for a machine to read); neither prints a
+credential.
+
+### Where the numbers come from
+
+Each provider publishes the account's own allowance:
+
+```
+GET https://api.anthropic.com/api/oauth/usage        # claude
+GET https://chatgpt.com/backend-api/wham/usage       # codex
+```
+
+Both are unofficial and can change or vanish. A read that fails leaves the row
+saying so rather than showing a stale number as if it were current.
+
+### Reading an account you are not on
+
+Only the live account keeps a fresh token; a parked profile's has usually
+expired. Reading one therefore renews it first, exactly as the CLI does on any
+expiry, and as [openusage](https://github.com/robinebers/openusage) does to keep
+its own panel current.
+
+**Renewing spends the stored refresh token.** The reply carries a new pair and
+the old one dies, so losing that reply would cost you a browser login. The order
+guards against it: back up the profile, call the endpoint, write the reply to a
+sidecar the instant it lands, rewrite the profile, clear the sidecar. A run that
+dies mid-way is adopted by the next one. An access token lasts hours, so this is
+roughly one renewal per account per token lifetime, not one per refresh.
+
+`ACCOUNT_SWITCH_USAGE_RENEW=0` turns it off; parked accounts then show their
+last-seen numbers with an age, and the live ones stay accurate.
+
+### Colours
+
+| var | default | meaning |
+|-----|---------|---------|
+| `ACCOUNT_SWITCH_USAGE_THRESHOLDS` | `60,85` | percent at which a window turns warn, then crit |
+| `ACCOUNT_SWITCH_USAGE_COLORS` | `ok=green,warn=yellow,crit=red,stale=blue` | the palette |
+| `ACCOUNT_SWITCH_USAGE_BAR` | `█░` | filled and empty bar characters |
+| `ACCOUNT_SWITCH_USAGE_BAR_WIDTH` | `10` | bar width in cells |
+
+The overlay and the `--color` text form read the same palette, so they agree.
+
 ## Picker keys
 
 ```
@@ -199,8 +265,65 @@ enter            switch to the selected account
 s                save the current login as a new profile (prompts for a name)
 r                rename the selected profile
 x                delete the selected profile, including the one in use
+d                show / hide every usage window, not just the binding one
+u                re-read usage
 q / esc          close
 ```
+
+Each account carries how much of it is left, so the picker answers "which one
+should I switch to" on its own:
+
+```
+       account               used resets in
+ ● main             █████░░░  66% 3d23h  you@example.com · max
+   spare            ░░░░░░░░   2% 5d04h  you@work.example · team
+```
+
+That column is the **binding** window — the one closest to stopping you,
+preferring the one the API itself marks active. `d` swaps it for every window,
+one account per block:
+
+```
+       account       window   used              at this rate
+Claude Code
+ ● main                                  you@example.com · max
+                    Session    11%  █░░░░░░░░░  ~77% left (resets in 2h37)
+                    Weekly     66%  ███████░░░  limit in 1d13h (resets in 3d23h)
+                    Fable       7%  █░░░░░░░░░  ~84% left (resets in 3d23h)
+
+   spare                                 you@work.example · team
+                    Session     0%  ░░░░░░░░░░  —
+                    Weekly      2%  ░░░░░░░░░░  ~92% left (resets in 5d04h)
+                    Fable       0%  ░░░░░░░░░░  —
+
+Codex
+ ● main                                  you@example.com · plus
+                    Weekly     66%  ███████░░░  limit in 1d13h (resets in 3d23h)
+```
+
+The account line drops its own figure while expanded, because the windows below
+already carry it. Both views carry column titles.
+
+**Fable** is a per-model weekly limit. The API calls it `weekly_scoped` and puts
+the model in a `scope` field, so the model's name is shown instead of the key.
+
+**Codex shows only its weekly window.** It reports one worth watching; the rest
+is noise next to claude's three.
+
+**at this rate** is the column that decides whether to switch: where the window
+lands if you keep spending it as you have been. `~70% left` finishes with room
+to spare; `limit in 1d13h (resets in 4d00h)` runs out three days early — 66%
+used is comfortable with a day to go and a problem with five. The reset comes
+along in brackets, because a projection means nothing without knowing what it is
+racing.
+
+It is worked out from the window's length and how much of it has already passed,
+so it says nothing until the window has run long enough to mean something: a
+window minutes old would otherwise claim the limit is imminent. A window already
+at 100% reads `spent`.
+
+Usage is read once when the picker opens and then comes from cache, because the
+endpoints rate-limit. `u` forces a re-read.
 
 `s`, `r` and `x` each open a dialog in the middle of the screen. Deleting removes
 this plugin's saved copy of a login and nothing else: the credential store the
@@ -259,6 +382,9 @@ rather than take the `autosaved-…` name.
 | `ACCOUNT_SWITCH_GLYPH` | `👤` | the badge character |
 | `ACCOUNT_SWITCH_BADGE_FORMAT` | `{glyph} {name}` | badge layout; either field may be dropped |
 | `ACCOUNT_SWITCH_SEPARATOR` | ` · ` | between kinds, when `badge` prints more than one |
+| `ACCOUNT_SWITCH_USAGE_RENEW` | `1` | renew a parked account's token so its usage can be read |
+| `ACCOUNT_SWITCH_USAGE_TTL_S` | `120` | how long a usage answer is reused |
+| `ACCOUNT_SWITCH_RENEW_MARGIN_S` | `300` | renew this far ahead of a token's expiry |
 | `HERDR_BIN_PATH` | `herdr` | herdr binary (set by herdr when it invokes an action) |
 
 Actions inherit the herdr server's environment, so setting these for the pane
