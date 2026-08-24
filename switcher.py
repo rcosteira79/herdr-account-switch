@@ -266,6 +266,9 @@ def _jwt_claims(token):
 class Backend:
     kind = ""
     title = ""
+    # What to call this agent in a badge. Shorter than `title`, because a tab
+    # bar showing two accounts has no room for "Claude Code".
+    short = ""
 
     def present(self):
         """True when this agent looks configured on this machine."""
@@ -295,6 +298,7 @@ class Backend:
 class ClaudeBackend(Backend):
     kind = "claude"
     title = "Claude Code"
+    short = "Claude"
     KEYCHAIN_SERVICE = "Claude Code-credentials"
 
     def __init__(self):
@@ -422,6 +426,7 @@ class ClaudeBackend(Backend):
 class CodexBackend(Backend):
     kind = "codex"
     title = "Codex"
+    short = "Codex"
 
     def __init__(self):
         self.home = os.path.expanduser(os.environ.get("CODEX_HOME") or "~/.codex")
@@ -1314,8 +1319,27 @@ def account_labels(kinds=None):
     return labels
 
 
-def _format_badge(name):
-    return BADGE_FORMAT.format(glyph=GLYPH, name=name)
+def _names_agent(fmt):
+    """True when a badge format names the agent itself.
+
+    A format that says which agent it is needs no prefix in front of it.
+    """
+    return bool(re.search(r"\{(agent|title)[!:}]", fmt or ""))
+
+
+def _format_badge(name, kind=None):
+    backend = BACKENDS.get(kind) if kind else None
+    fields = {
+        "glyph": GLYPH,
+        "name": name,
+        "agent": (backend.short if backend else "") or kind or "",
+        "title": (backend.title if backend else "") or kind or "",
+    }
+    try:
+        return BADGE_FORMAT.format(**fields)
+    except (KeyError, IndexError, ValueError):
+        # A format naming a field that does not exist must not blank the badge.
+        return "{glyph} {name}".format(**fields)
 
 
 def _set_badge(pane_id, text):
@@ -1353,7 +1377,7 @@ def stamp_badges():
         if kind is None:
             continue
         if kind in labels:
-            _set_badge(pane_id, _format_badge(labels[kind]))
+            _set_badge(pane_id, _format_badge(labels[kind], kind))
         else:
             _clear_badge(pane_id)
 
@@ -1719,9 +1743,12 @@ def cmd_badge(argv):
     labels = account_labels(kinds)
     if not labels:
         return 0
-    named = len(labels) > 1
+    # Two accounts on one line need telling apart. Prefix them with the agent's
+    # name, unless the format already says which agent it is.
+    prefixed = len(labels) > 1 and not _names_agent(BADGE_FORMAT)
     print(SEPARATOR.join(
-        (f"{kind} " if named else "") + _format_badge(label)
+        ((BACKENDS[kind].short + " ") if prefixed else "")
+        + _format_badge(label, kind)
         for kind, label in labels.items()
     ))
     return 0

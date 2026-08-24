@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Checks for the pre-switch liveness check.
+"""Checks for the pre-switch liveness check and the badge format.
 
 Run with `python3 test_switcher.py`. Standard library only, same as the plugin.
 
@@ -224,6 +224,36 @@ with S._Lock():
 check("a nested lock did not deadlock", True)
 check("the lock is released once the outer block ends",
       S._Lock._depth == 0 and S._Lock._file is None)
+
+print("\nthe badge names the agent when it shows more than one account")
+S.BACKENDS["claude"] = S.ClaudeBackend()
+S.BACKENDS["codex"] = S.CodexBackend()
+
+
+def badge(fmt, name="work", kind="claude"):
+    S.BADGE_FORMAT = fmt
+    return S._format_badge(name, kind)
+
+
+check("the default format is unchanged", badge("{glyph} {name}") == "\N{BUST IN SILHOUETTE} work",
+      badge("{glyph} {name}"))
+check("{agent} is the agent's short name", badge("{agent} - {name}") == "Claude - work",
+      badge("{agent} - {name}"))
+check("{title} is its full name", badge("{title}: {name}") == "Claude Code: work",
+      badge("{title}: {name}"))
+check("{agent} works for codex too",
+      badge("{agent} - {name}", "spare", "codex") == "Codex - spare",
+      badge("{agent} - {name}", "spare", "codex"))
+check("a format spec is honoured", badge("{agent:>7}") == " Claude", repr(badge("{agent:>7}")))
+check("an unknown field falls back to the default",
+      badge("{nope} {name}") == "\N{BUST IN SILHOUETTE} work", badge("{nope} {name}"))
+check("an unbalanced brace falls back to the default",
+      badge("{agent {name}") == "\N{BUST IN SILHOUETTE} work", badge("{agent {name}"))
+check("a format naming the agent suppresses the prefix",
+      S._names_agent("{agent} - {name}") and S._names_agent("{title}: {name}")
+      and S._names_agent("{agent:>7}"))
+check("a format not naming the agent keeps the prefix",
+      not S._names_agent("{glyph} {name}") and not S._names_agent(""))
 
 shutil.rmtree(STATE, ignore_errors=True)
 print("\n%s — %d of the checks failed"

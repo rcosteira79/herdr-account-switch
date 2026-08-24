@@ -116,7 +116,16 @@ The `badge` command prints one line and exits — herdr re-runs it on the
 interval, so this needs no daemon and no `[[startup]]` hook. It reads the
 credential store and nothing else: no socket, no writes. Naming a kind
 (`badge claude`) prints that kind alone; `badge` with no argument prints every
-kind it can name, each prefixed with the kind.
+kind it can name, each prefixed with the agent's name:
+
+```
+Claude 👤 work · Codex 👤 spare
+```
+
+The badge cannot vary per pane or per tab, and that is not a limitation of the
+badge. A credential store is machine-wide per agent, so every claude pane bills
+to the same account; a per-pane badge would print the same value on each one.
+Printing both accounts once, on the tab bar, says everything there is to say.
 
 Set `ACCOUNT_SWITCH_BADGE=0` in herdr's environment to stop stamping panes once
 the tab bar shows it, or keep both — they read the same value.
@@ -161,6 +170,24 @@ a way to show less:
 | `{glyph}{name}` | `👤work` — no space |
 | `{glyph}` | `👤` — badge only, no account name |
 | `{name}` | `work` — no glyph |
+| `{agent} - {name}` | `Claude - work` — the agent's short name |
+| `{title}: {name}` | `Claude Code: work` — its full name |
+
+`{agent}` and `{title}` earn their place when the badge names two accounts at
+once. A format that uses either one already says which agent it is, so the
+automatic prefix steps aside. With `separator` set to three spaces:
+
+```toml
+badge_format = "{agent} - {name}"
+separator = "   "
+```
+
+```
+Claude - work   Codex - spare
+```
+
+A format naming a field that does not exist falls back to the default rather
+than blanking the badge.
 
 For a `tab_bar_right` entry, set them inline on the command — that env is yours
 to write, unlike the one herdr hands to plugin actions:
@@ -398,7 +425,8 @@ $(herdr plugin config-dir rcosteira.account-switch)/config.toml
 # The badge character on each agent pane and in the tab bar.
 glyph = "🔑"
 
-# What goes around it. Drop {name} for a badge with no account name.
+# What goes around it, from {glyph}, {name}, {agent} and {title}. Drop {name}
+# for a badge with no account name.
 badge_format = "{glyph}{name}"
 
 # Percent at which a usage window turns amber, then red.
@@ -433,7 +461,7 @@ command, which is why they are the easy place to restyle the badge.
 | `ACCOUNT_SWITCH_BADGE` | `1` | write the `$acct` pane token |
 | `ACCOUNT_SWITCH_BADGE_ALWAYS` | `0` | badge a kind with no saved profile too |
 | `ACCOUNT_SWITCH_GLYPH` | `👤` | the badge character |
-| `ACCOUNT_SWITCH_BADGE_FORMAT` | `{glyph} {name}` | badge layout; either field may be dropped |
+| `ACCOUNT_SWITCH_BADGE_FORMAT` | `{glyph} {name}` | badge layout, from `{glyph}`, `{name}`, `{agent}`, `{title}`; any may be dropped |
 | `ACCOUNT_SWITCH_SEPARATOR` | ` · ` | between kinds, when `badge` prints more than one |
 | `ACCOUNT_SWITCH_VERIFY_SWITCH` | `1` | ask the provider whether a saved login still works before installing it |
 | `ACCOUNT_SWITCH_USAGE_RENEW` | `1` | renew a parked account's token so its usage can be read |
