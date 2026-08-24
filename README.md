@@ -106,12 +106,20 @@ keeps it. Blank `tab_bar_right_separator` when you add one, or the default ` · 
 lands between the badge and the inset. Drop both lines if you want the badge
 hard against the edge.
 
-That path is a symlink the plugin repoints at itself on every herdr start, so it
-keeps working after an update. Naming the install directory directly does not:
-it carries a content hash, so an update moves it, and herdr clears a command's
-value when it fails — the badge would vanish with nothing to explain it.
-`herdr plugin list --plugin rcosteira.account-switch --json` reports the real
-directory if you need it.
+That path is a symlink the plugin repoints at itself on every run. Naming the
+install directory instead would also work — herdr names it
+`<plugin-id>-<hash>`, and the hash is `sha256(plugin_id)` truncated to twelve
+characters, so it is stable across updates and moves only if the plugin id
+changes. Checked on every plugin installed here, this one included.
+
+The symlink is still the better path to write down. Where a plugin lives depends
+on how it was installed — `herdr plugin install` puts it under
+`~/.config/herdr/plugins/github/`, `herdr plugin link` leaves it wherever you
+linked it — and that layout is herdr's business, not a documented interface. The
+symlink is keyed by plugin id in the state directory, which herdr already treats
+as ours. `herdr plugin list --plugin rcosteira.account-switch --json` reports the
+real directory if you want it.
+
 The `badge` command prints one line and exits — herdr re-runs it on the
 interval, so this needs no daemon and no `[[startup]]` hook. It reads the
 credential store and nothing else: no socket, no writes. Naming a kind

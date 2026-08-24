@@ -50,10 +50,13 @@ STATE_DIR = os.environ.get("HERDR_PLUGIN_STATE_DIR") or os.path.expanduser(
 PROFILES_DIR = os.path.join(STATE_DIR, "profiles")
 BACKUP_DIR = os.path.join(STATE_DIR, "backups")
 LOCK = os.path.join(STATE_DIR, "switch.lock")
-# An installed plugin's directory carries a content hash, so it moves on every
-# update and anything naming that path breaks silently. This symlink lives in
-# the state directory, which is keyed by plugin id and therefore stable, and is
-# repointed at each startup. Config can name it and survive updates.
+# Where a plugin lives depends on how it was installed: `plugin install` puts it
+# under a `<plugin-id>-<hash>` directory, `plugin link` leaves it where you
+# linked it. The hash is sha256(plugin_id) cut to twelve characters, so an
+# install path is stable across updates — but it is herdr's layout, not a
+# documented interface. This symlink lives in the state directory, which is
+# keyed by plugin id and is already ours, and is repointed on every run. Config
+# can name it whichever way the plugin was installed.
 # realpath, not abspath: this script is *meant* to be run through the symlink
 # below, and abspath would then report the symlink's own directory — so the
 # refresh would point the link at itself and nothing could be read through it.
