@@ -1096,9 +1096,10 @@ def fetch_usage(kind, payload):
 def _refresh_refused(exc):
     """True when a token endpoint turned a refresh token down for good.
 
-    The definitive answers are listed once in the README, under "What the
-    providers do to your logins" — keep that table and this function in step.
-    Anything vaguer than those is not proof that the account is dead.
+    The definitive answers are listed once, in
+    docs/solutions/runtime-errors/saved-login-revoked-outside-the-plugin.md —
+    keep that table and this function in step. Anything vaguer than those is not
+    proof that the account is dead.
     """
     if exc.code not in (400, 401):
         return False
