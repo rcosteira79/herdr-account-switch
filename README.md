@@ -478,6 +478,48 @@ command, which is why they are the easy place to restyle the badge.
 | `HERDR_BIN_PATH` | `herdr` | herdr binary (set by herdr when it invokes an action) |
 
 
+## What the providers do to your logins
+
+Three rules that cost real investigation to establish. Everything this plugin
+does about not losing a login follows from them, so they are written down here
+rather than left in the code.
+
+**A refresh token is single-use and rotates.** Renewing spends the stored one and
+the reply carries its replacement. Reusing a spent token is permanent: the
+provider answers `refresh_token_reused` and that chain is finished, which costs a
+browser login to repair. This is why `renew_profile` writes the reply to disk
+*before* the profile is rewritten, and why a switch installs the payload the
+renewal handed back rather than the one it started with.
+
+**A refusal is only definitive when the provider says so in words.** These are
+the answers that mean the login is genuinely dead:
+
+| status | code | meaning |
+|---|---|---|
+| 401 | `token_revoked` | the grant was revoked, whatever the token's `exp` claims |
+| 401 | `token_invalidated` | same, worded differently by ChatGPT |
+| 400 | `invalid_grant` | the refresh token is not accepted |
+| 400 | `refresh_token_reused` | it was already spent |
+
+A JWT's `exp` is a claim, not proof: a token the clock still calls valid gets a
+401 once its session is superseded. Everything vaguer than the table — a
+timeout, a 429, no network — proves nothing either way and must never be treated
+as a dead account.
+
+**Codex revocation is scoped to the installation, not to the account.** `CODEX_HOME`
+contains an `installation_id`, and signing in revokes only the grants issued
+under *that* id — including grants for a different account. Two consequences:
+
+- Swapping `auth.json`, which is all this plugin does, revokes nothing. That is
+  why hot-swapping moves running agents without costing anyone their session.
+- A `codex login` — from the CLI or from Codex desktop, which share `~/.codex` —
+  revokes whatever the previous login in that home held. A grant obtained under a
+  separate `CODEX_HOME` survives it.
+
+So a saved profile can die without this plugin touching it, and it dies silently:
+the snapshot still parses, still installs, and only fails when used. That is what
+the pre-switch check exists to catch.
+
 ## Fragility
 
 Credential layouts are the agents' private business and can change without
