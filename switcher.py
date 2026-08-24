@@ -172,17 +172,32 @@ def notify(title, body=""):
 
 class _Lock:
     """Serialise credential swaps: two overlapping writes to the same store
-    would race the CLIs' own token refresh."""
+    would race the CLIs' own token refresh.
+
+    Re-entrant, because the nesting is real: switch() holds this lock while
+    proven_payload renews, and renew_profile takes it again. flock keys on the
+    open file rather than on the process, so a second open() inside the first
+    would queue behind a lock this very process already holds, and wait for
+    ever.
+    """
+
+    _depth = 0
+    _file = None
 
     def __enter__(self):
-        _secure_dir(STATE_DIR)
-        self._f = open(LOCK, "w")
-        fcntl.flock(self._f, fcntl.LOCK_EX)
+        if _Lock._depth == 0:
+            _secure_dir(STATE_DIR)
+            _Lock._file = open(LOCK, "w")
+            fcntl.flock(_Lock._file, fcntl.LOCK_EX)
+        _Lock._depth += 1
         return self
 
     def __exit__(self, *exc):
-        fcntl.flock(self._f, fcntl.LOCK_UN)
-        self._f.close()
+        _Lock._depth -= 1
+        if _Lock._depth == 0 and _Lock._file is not None:
+            fcntl.flock(_Lock._file, fcntl.LOCK_UN)
+            _Lock._file.close()
+            _Lock._file = None
 
 
 # ---- small file helpers ---------------------------------------------------
@@ -251,6 +266,9 @@ def _jwt_claims(token):
 class Backend:
     kind = ""
     title = ""
+    # What to call this agent in a badge. Shorter than `title`, because a tab
+    # bar showing two accounts has no room for "Claude Code".
+    short = ""
 
     def present(self):
         """True when this agent looks configured on this machine."""
@@ -280,6 +298,7 @@ class Backend:
 class ClaudeBackend(Backend):
     kind = "claude"
     title = "Claude Code"
+    short = "Claude"
     KEYCHAIN_SERVICE = "Claude Code-credentials"
 
     def __init__(self):
@@ -407,6 +426,7 @@ class ClaudeBackend(Backend):
 class CodexBackend(Backend):
     kind = "codex"
     title = "Codex"
+    short = "Codex"
 
     def __init__(self):
         self.home = os.path.expanduser(os.environ.get("CODEX_HOME") or "~/.codex")
@@ -585,10 +605,19 @@ def switch(kind, key):
             raise SwitchError(f"no {kind} profile named {key!r}")
 
         live = backend.read_live()
+        live_fp = None
         if live is not None:
             live_fp = _fingerprint(backend.identity(live))
             if live_fp and live_fp == target.get("fingerprint"):
                 return f"{kind}: already on {target['label']}"
+
+        # Prove the saved login still works before overwriting a working one.
+        # This can rotate the target's tokens, so keep what it hands back: the
+        # write below installs it, and the profile is rewritten from it at the
+        # end of the switch.
+        target["payload"] = proven_payload(kind, target)
+
+        if live is not None:
             # Never overwrite a login we don't have a copy of.
             outgoing = next(
                 (p for p in list_profiles(kind) if p.get("fingerprint") == live_fp),
@@ -860,6 +889,8 @@ CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 # mid-read. openusage uses the same five minutes.
 RENEW_MARGIN_S = _num_env("ACCOUNT_SWITCH_RENEW_MARGIN_S", 300.0)
 USAGE_RENEW = _flag("ACCOUNT_SWITCH_USAGE_RENEW", default=True)
+# Ask the provider whether a saved login still works before installing it.
+VERIFY_SWITCH = _flag("ACCOUNT_SWITCH_VERIFY_SWITCH", default=True)
 
 
 # The token endpoint answers the CLI's own HTTP client, and refuses a default
@@ -1059,6 +1090,78 @@ def fetch_usage(kind, payload):
     return None
 
 
+def _refresh_refused(exc):
+    """True when a token endpoint turned a refresh token down for good.
+
+    A rotated refresh token is spent, and the reply says so in words:
+    `invalid_grant`, or the reuse error a provider raises when the same one
+    comes back twice. A 401 there is the same answer. Anything vaguer than
+    that is not proof that the account is dead.
+    """
+    if exc.code not in (400, 401):
+        return False
+    if exc.code == 401:
+        return True
+    try:
+        body = json.loads(exc.read().decode() or "{}")
+    except Exception:
+        return False
+    said = " ".join(
+        str(body.get(field) or "")
+        for field in ("error", "error_description", "detail")
+    ).lower()
+    return "invalid_grant" in said or "reused" in said
+
+
+def proven_payload(kind, profile):
+    """The profile's payload, proven still usable, renewed if it had to be.
+
+    switch() checks that the credential store took the write. That says nothing
+    about whether the login still works, and the two come apart exactly when it
+    matters: a snapshot the provider has since retired installs cleanly,
+    reports success, and signs you out. So ask the provider first, while the
+    working login is still in place.
+
+    Only a definitive refusal stops a switch — the provider answering 401 to a
+    token it was just handed, or turning the refresh token down in words. Being
+    offline, timing out, or getting rate limited proves nothing either way, and
+    none of them block the switch.
+
+    Returns the payload to install. It is not always the one that came in:
+    renewing rotates the tokens, and the caller must write *this* one back, or
+    it parks a spent pair over a live one.
+    """
+    payload = profile.get("payload") or {}
+    if not VERIFY_SWITCH:
+        return payload
+    label = profile.get("label") or profile.get("slug") or kind
+    try:
+        payload = renew_profile(kind, profile) or payload
+        try:
+            fetch_usage(kind, payload)
+        except urllib.error.HTTPError as exc:
+            if exc.code != 401:
+                raise
+            # 401 on a token the clock still calls valid: the session was
+            # superseded. Renew past the clock and ask once more, because the
+            # server is the authority and the expiry is only a claim.
+            renewed = renew_profile(kind, profile, force=True)
+            if not renewed:
+                raise
+            payload = renewed
+            fetch_usage(kind, payload)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 401 or _refresh_refused(exc):
+            raise SwitchError(
+                "%s: %s was refused — nothing changed; log that account in "
+                "again and save it" % (kind, label)
+            )
+        return payload
+    except Exception:
+        return payload
+    return payload
+
+
 def _usage_cache():
     return _read_json(USAGE_CACHE) or {}
 
@@ -1216,8 +1319,27 @@ def account_labels(kinds=None):
     return labels
 
 
-def _format_badge(name):
-    return BADGE_FORMAT.format(glyph=GLYPH, name=name)
+def _names_agent(fmt):
+    """True when a badge format names the agent itself.
+
+    A format that says which agent it is needs no prefix in front of it.
+    """
+    return bool(re.search(r"\{(agent|title)[!:}]", fmt or ""))
+
+
+def _format_badge(name, kind=None):
+    backend = BACKENDS.get(kind) if kind else None
+    fields = {
+        "glyph": GLYPH,
+        "name": name,
+        "agent": (backend.short if backend else "") or kind or "",
+        "title": (backend.title if backend else "") or kind or "",
+    }
+    try:
+        return BADGE_FORMAT.format(**fields)
+    except (KeyError, IndexError, ValueError):
+        # A format naming a field that does not exist must not blank the badge.
+        return "{glyph} {name}".format(**fields)
 
 
 def _set_badge(pane_id, text):
@@ -1255,7 +1377,7 @@ def stamp_badges():
         if kind is None:
             continue
         if kind in labels:
-            _set_badge(pane_id, _format_badge(labels[kind]))
+            _set_badge(pane_id, _format_badge(labels[kind], kind))
         else:
             _clear_badge(pane_id)
 
@@ -1621,9 +1743,12 @@ def cmd_badge(argv):
     labels = account_labels(kinds)
     if not labels:
         return 0
-    named = len(labels) > 1
+    # Two accounts on one line need telling apart. Prefix them with the agent's
+    # name, unless the format already says which agent it is.
+    prefixed = len(labels) > 1 and not _names_agent(BADGE_FORMAT)
     print(SEPARATOR.join(
-        (f"{kind} " if named else "") + _format_badge(label)
+        ((BACKENDS[kind].short + " ") if prefixed else "")
+        + _format_badge(label, kind)
         for kind, label in labels.items()
     ))
     return 0
