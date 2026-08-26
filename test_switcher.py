@@ -255,6 +255,58 @@ check("a format naming the agent suppresses the prefix",
 check("a format not naming the agent keeps the prefix",
       not S._names_agent("{glyph} {name}") and not S._names_agent(""))
 
+# ---- what another plugin can read off the profile list -------------------
+#
+# autocontinue rotates to whichever account frees up soonest, so it has to see
+# what each saved account has left. The list used to carry names alone, which
+# is why rotation could only take them in the order they were saved.
+
+
+def list_json(kind="claude"):
+    """cmd_list's JSON, captured instead of printed."""
+    buffer = io.StringIO()
+    real, sys.stdout = sys.stdout, buffer
+    try:
+        S.cmd_list(["--kind", kind])
+    finally:
+        sys.stdout = real
+    return json.loads(buffer.getvalue())
+
+
+print("\nthe profile list carries each account's usage")
+fake = reset()
+S.renew_profile = lambda k, p, force=False: p.get("payload")
+asked = []
+S.fetch_usage = lambda k, payload: asked.append(1) or []
+S._remember_usage("claude:target", [
+    {"label": "session", "percent": 100, "resets_at": time.time() + 3600},
+    {"label": "weekly", "percent": 40, "resets_at": time.time() + 90000},
+])
+rows = list_json()
+target = next((r for r in rows if r.get("slug") == "target"), None)
+check("the parked profile is listed", target is not None, str(rows))
+check("its windows come through",
+      [w.get("label") for w in (target or {}).get("windows") or []]
+      == ["session", "weekly"], str((target or {}).get("windows")))
+check("the reading is marked cached, not live",
+      (target or {}).get("state") == "cached", str((target or {}).get("state")))
+check("its age is there to judge staleness by",
+      isinstance((target or {}).get("at"), float), str((target or {}).get("at")))
+check("the names it already published are still there",
+      (target or {}).get("label") == "Target"
+      and (target or {}).get("active") is False, str(target))
+
+print("\nand reads it off the cache, never off the network")
+check("a poll-loop caller triggers no fetch", not asked, "%d fetches" % len(asked))
+
+print("\na kind nobody serves still lists nothing")
+# usage_rows reads an empty kind list as "every kind", so asking it for the
+# profiles of an unknown kind would answer with all of them.
+check("an unknown kind returns an empty list", list_json("nosuchkind") == [],
+      str(list_json("nosuchkind")))
+S.fetch_usage = REAL_FETCH_USAGE
+S.renew_profile = REAL_RENEW_PROFILE
+
 shutil.rmtree(STATE, ignore_errors=True)
 print("\n%s — %d of the checks failed"
       % ("FAILED" if FAILED else "PASSED", len(FAILED)))
