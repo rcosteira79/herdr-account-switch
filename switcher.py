@@ -1537,25 +1537,42 @@ def cmd_status(argv):
 
 
 def cmd_list(argv):
-    """Profiles as JSON, for another plugin to read. Never prints credentials."""
+    """Profiles as JSON, for another plugin to read. Never prints credentials.
+
+    Each row carries what that account has left, so a caller can choose the
+    account that frees up soonest rather than the one saved first. The numbers
+    come off the cache alone: this is a poll-loop entry point, and fetching
+    here would rate-limit the account for every reader.
+    """
     kinds = KIND_ORDER
     if "--kind" in argv:
         wanted = argv[argv.index("--kind") + 1]
         kinds = [wanted] if wanted in BACKENDS else []
+    if not kinds:
+        print(json.dumps([]))
+        return 0
+    profiles = {(kind, p["slug"]): p
+                for kind in kinds for p in list_profiles(kind)}
     out = []
-    for kind in kinds:
-        live = BACKENDS[kind].read_live()
-        live_fp = _fingerprint(BACKENDS[kind].identity(live)) if live else None
-        for profile in list_profiles(kind):
-            out.append({
-                "kind": kind,
-                "slug": profile["slug"],
-                "label": profile["label"],
-                "active": bool(live_fp) and profile.get("fingerprint") == live_fp,
-                "saved_at": profile.get("saved_at"),
-                "last_used": profile.get("last_used"),
-                "tier": (profile.get("identity") or {}).get("subscription_type"),
-            })
+    # usage_rows walks the same kinds and profiles in the same order, and works
+    # out which one is live once per kind, so it is the row source rather than
+    # a second pass beside one.
+    for row in usage_rows(kinds, refresh=False):
+        profile = profiles.get((row["kind"], row["slug"])) or {}
+        out.append({
+            "kind": row["kind"],
+            "slug": row["slug"],
+            "label": row["label"],
+            "active": row["active"],
+            "saved_at": profile.get("saved_at"),
+            "last_used": profile.get("last_used"),
+            "tier": (profile.get("identity") or {}).get("subscription_type"),
+            "state": row["state"],
+            "at": row["at"],
+            "age": row["age"],
+            "windows": row["windows"],
+            "problem": row["problem"],
+        })
     print(json.dumps(out))
     return 0
 
