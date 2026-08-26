@@ -307,6 +307,45 @@ check("an unknown kind returns an empty list", list_json("nosuchkind") == [],
 S.fetch_usage = REAL_FETCH_USAGE
 S.renew_profile = REAL_RENEW_PROFILE
 
+# ---- asking the usage report for one kind --------------------------------
+#
+# Refreshing a reading costs a request per saved account, and a renewal on a
+# parked one. A caller that only cares about one harness should not pay for
+# the other.
+
+
+def usage_json(kind=None):
+    """cmd_usage's JSON, captured instead of printed."""
+    argv = ["--json"] + (["--kind", kind] if kind else [])
+    buffer = io.StringIO()
+    real, sys.stdout = sys.stdout, buffer
+    try:
+        S.cmd_usage(argv)
+    finally:
+        sys.stdout = real
+    return json.loads(buffer.getvalue())
+
+
+print("\nthe usage report can be asked for a single kind")
+fake = reset()
+S.renew_profile = lambda k, p, force=False: p.get("payload")
+S.fetch_usage = lambda k, payload: [{"label": "session", "percent": 5}]
+# The second kind is faked as well. An unfiltered report reaches for whatever
+# backend is registered, and the real one would read a real credential store.
+codex = FakeBackend()
+codex.kind = "codex"
+S.BACKENDS["codex"] = codex
+S.write_profile(S.make_profile("codex", "CodexAcct", {"who": "CODEX"}))
+kinds = {r["kind"] for r in usage_json("claude")}
+check("only the kind asked for comes back", kinds == {"claude"}, str(kinds))
+check("asking for nothing in particular still reports both",
+      {r["kind"] for r in usage_json()} == {"claude", "codex"},
+      str({r["kind"] for r in usage_json()}))
+check("an unknown kind reports nothing", usage_json("nosuchkind") == [],
+      str(usage_json("nosuchkind")))
+S.fetch_usage = REAL_FETCH_USAGE
+S.renew_profile = REAL_RENEW_PROFILE
+
 shutil.rmtree(STATE, ignore_errors=True)
 print("\n%s — %d of the checks failed"
       % ("FAILED" if FAILED else "PASSED", len(FAILED)))
