@@ -1834,15 +1834,28 @@ def _profile_line(kind, p, width, usage=None):
 
 
 def binding_window(row):
-    """The window closest to stopping you: the fullest one, then the soonest.
+    """The window that will stop you first.
 
-    The API marks one `is_active`; that is preferred when it is there, since it
-    is the account's own answer rather than a guess from the numbers.
+    Ranked by how long each one has before it fills at the rate it is being
+    spent. That is the question the badge answers, and it is not the same as
+    which window is fullest — comparing percentages across windows of different
+    lengths rates 42% of a week as worse than 10% of five hours, which is
+    backwards.
+
+    A window that resets before it fills stops nobody. When none of them
+    projects a limit there is no rate to reason from, and the fullest,
+    soonest-resetting window is the best guess left; the account's own
+    `is_active` mark is preferred there, being its answer rather than ours.
     """
     windows = [w for w in shown_windows(row)
                if isinstance(w.get("percent"), (int, float))]
     if not windows:
         return None
+    projected = [(t, w) for w in windows
+                 for t in [time_to_limit(w)] if t is not None]
+    if projected:
+        return min(projected,
+                   key=lambda p: (p[0], p[1].get("resets_at") or 0))[1]
     marked = [w for w in windows if w.get("binding")]
     pool = marked or windows
     return max(pool, key=lambda w: (w["percent"], -(w.get("resets_at") or 0)))
@@ -1850,6 +1863,8 @@ def binding_window(row):
 
 FIVE_HOURS = 5 * 3600
 SEVEN_DAYS = 7 * 86400
+# Spend this much of a window and its rate means something, however new it is.
+SETTLED_PERCENT = _num_env("ACCOUNT_SWITCH_SETTLED_PERCENT", 5.0)
 
 def _centred(text, width):
     """A column title sitting over the middle of its column."""
@@ -1900,6 +1915,52 @@ def window_name(label):
     return text
 
 
+def _spend_rate(window):
+    """Percent per second, once enough has been spent for that to mean anything.
+
+    None until then. A window minutes old can give a rate wild enough to claim
+    the limit is imminent, so there has to be some bar. Elapsed time alone is
+    the wrong one: a five-hour window can be a quarter spent before 5% of it
+    has run, and the start of a window is exactly when the answer matters. How
+    much has actually been spent is evidence too.
+    """
+    percent, resets = window.get("percent"), window.get("resets_at")
+    if not isinstance(percent, (int, float)) or percent <= 0 or not resets:
+        return None
+    total = window_seconds(window)
+    left = resets - time.time()
+    if not total or left <= 0:
+        return None
+    elapsed = total - left
+    if elapsed <= 0:
+        return None
+    settled = elapsed >= max(600.0, total * 0.05) or percent >= SETTLED_PERCENT
+    return (percent / elapsed) if settled else None
+
+
+def time_to_limit(window):
+    """Seconds until this window reaches its own limit, at the rate it is spent.
+
+    Zero when it is already spent. None when it will reset before it fills, or
+    when too little has been spent for a rate to mean anything.
+
+    This is what says which window is about to stop you. A percentage cannot:
+    42% of a weekly window is a day and a half away while 10% of a five-hour
+    window can be under two hours away, and comparing the two numbers rates the
+    weekly as the worse of them.
+    """
+    percent = window.get("percent")
+    if isinstance(percent, (int, float)) and percent >= 100:
+        return 0.0
+    rate = _spend_rate(window)
+    if rate is None:
+        return None
+    left = window["resets_at"] - time.time()
+    if percent + rate * left < 100:
+        return None
+    return (100 - percent) / rate
+
+
 def projection(window):
     """Where this window lands by its reset, at the rate it is being spent.
 
@@ -1911,21 +1972,16 @@ def projection(window):
     if not resets:
         return "—"
     until = _left(resets - time.time())
-    total = window_seconds(window)
-    left = resets - time.time()
-    elapsed = (total - left) if total else None
     if percent is not None and percent >= 100:
         return "spent (resets in %s)" % until
-    # A window minutes old gives a rate wild enough to claim the limit is
-    # imminent, so say nothing until enough of it has run to mean something.
-    settled = elapsed is not None and elapsed >= max(600.0, (total or 0) * 0.05)
-    if percent is None or not settled or percent <= 0 or left <= 0:
+    rate = _spend_rate(window)
+    if rate is None:
         return "resets in %s" % until
-    rate = percent / elapsed
-    landing = percent + rate * left
-    if landing < 100:
+    hits = time_to_limit(window)
+    if hits is None:
+        landing = percent + rate * (resets - time.time())
         return "~%d%% left (resets in %s)" % (round(100 - landing), until)
-    return "limit in %s (resets in %s)" % (_left((100 - percent) / rate), until)
+    return "limit in %s (resets in %s)" % (_left(hits), until)
 
 
 def shown_windows(row):

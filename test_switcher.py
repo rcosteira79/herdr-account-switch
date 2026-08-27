@@ -392,6 +392,68 @@ claude = {"kind": "claude", "state": "live", "windows": [
 check("all three still show", len(S.shown_windows(claude)) == 3,
       str(len(S.shown_windows(claude))))
 
+# ---- which window will stop you first ------------------------------------
+#
+# A percentage means nothing across windows of different lengths: 42% of a week
+# is not worse than 10% of five hours. What matters is how long each window has
+# before it fills at the rate it is being spent. The badge ranked on the
+# percentage, so a five-hour window an hour from stopping you lost to a weekly
+# window a day and a half away.
+
+
+def window(label, percent, seconds, elapsed):
+    """A window `elapsed` seconds into its run, at `percent` used."""
+    return {"label": label, "percent": percent, "seconds": seconds,
+            "resets_at": time.time() + seconds - elapsed}
+
+
+def codex(session, weekly):
+    return {"kind": "codex", "state": "live", "windows": [session, weekly]}
+
+
+print("\nthe window that fills first is the binding one")
+# The numbers measured on a real account: 10% of a five-hour window twelve
+# minutes in fills in about an hour and three quarters; 42% of a weekly window
+# takes a day and a half.
+session = window("5h", 10, 5 * 3600, 12 * 60)
+weekly = window("weekly", 42, 168 * 3600, 1601 * 60)
+check("the five-hour window fills sooner",
+      S.time_to_limit(session) < S.time_to_limit(weekly),
+      "%s vs %s" % (S._left(S.time_to_limit(session)),
+                    S._left(S.time_to_limit(weekly))))
+check("and it is the one the badge reports",
+      (S.binding_window(codex(session, weekly)) or {}).get("label") == "5h",
+      str((S.binding_window(codex(session, weekly)) or {}).get("label")))
+
+print("\na window nobody is spending cannot stop anyone")
+idle = window("5h", 0, 5 * 3600, 12 * 60)
+check("an idle window projects nothing", S.time_to_limit(idle) is None)
+check("so the weekly window binds instead",
+      (S.binding_window(codex(idle, weekly)) or {}).get("label") == "weekly",
+      str((S.binding_window(codex(idle, weekly)) or {}).get("label")))
+
+print("\na window already spent stops you now")
+spent = window("5h", 100, 5 * 3600, 4 * 3600)
+check("it needs no rate to say so", S.time_to_limit(spent) == 0)
+check("and it outranks anything still filling",
+      (S.binding_window(codex(spent, weekly)) or {}).get("label") == "5h",
+      str((S.binding_window(codex(spent, weekly)) or {}).get("label")))
+
+print("\na window that resets before it fills is not a limit")
+slow = window("weekly", 5, 168 * 3600, 100 * 3600)
+check("it projects nothing", S.time_to_limit(slow) is None, str(S.time_to_limit(slow)))
+
+print("\none burst at the start of a window is not a rate")
+burst = window("5h", 0.5, 5 * 3600, 30)
+check("half a percent in thirty seconds projects nothing",
+      S.time_to_limit(burst) is None, str(S.time_to_limit(burst)))
+
+print("\nthe words and the ranking cannot disagree")
+row = codex(session, weekly)
+binding = S.binding_window(row)
+check("the binding window is the one whose line names a limit",
+      S.projection(binding).startswith("limit in"), S.projection(binding))
+
 shutil.rmtree(STATE, ignore_errors=True)
 print("\n%s — %d of the checks failed"
       % ("FAILED" if FAILED else "PASSED", len(FAILED)))
