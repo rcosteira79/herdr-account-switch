@@ -471,6 +471,57 @@ text = S.usage_summary(emptied)[0]
 check("a spent window counts down to when it lets you back in",
       "1h00" in text or "59m" in text, text.strip())
 
+# ---- a reading that is no longer current ---------------------------------
+#
+# A cached reading holds its percentage still while the clock keeps running. The
+# rate was worked out by dividing that frozen number by the time elapsed until
+# *now*, so the longer nobody looked, the calmer a busy account appeared — the
+# wrong direction for a figure about what is going to stop you.
+
+
+def read_ago(seconds, label, percent, window_s, elapsed_at_read):
+    """A window read `seconds` ago, `elapsed_at_read` into its own run."""
+    read_at = time.time() - seconds
+    return {"label": label, "percent": percent, "seconds": window_s,
+            "resets_at": read_at + window_s - elapsed_at_read,
+            "read_at": read_at}
+
+
+print("\na rate is measured when the numbers were read")
+# 10% twelve minutes into a five-hour window fills in about 1h48 from the read.
+# Read an hour ago, that leaves about 48 minutes from now.
+stale = read_ago(3600, "5h", 10, 5 * 3600, 12 * 60)
+hits = S.time_to_limit(stale)
+check("an hour-old reading still projects a limit", hits is not None, str(hits))
+check("and counts from now, not from the read",
+      hits is not None and 40 * 60 < hits < 56 * 60, S._left(hits))
+
+print("\nthe staleness makes it sooner, never later")
+fresh = read_ago(0, "5h", 10, 5 * 3600, 12 * 60)
+check("the same numbers read just now are further off",
+      hits is not None and S.time_to_limit(fresh) > hits,
+      "%s vs %s" % (S._left(S.time_to_limit(fresh)), S._left(hits)))
+
+print("\nand a stale window can outrank a fuller fresh one")
+weekly = read_ago(0, "weekly", 42, 168 * 3600, 1601 * 60)
+row = {"kind": "codex", "state": "cached", "windows": [stale, weekly]}
+check("the five-hour window still binds",
+      (S.binding_window(row) or {}).get("label") == "5h",
+      str((S.binding_window(row) or {}).get("label")))
+
+print("\na window carrying no read time is read as current")
+bare = {"label": "5h", "percent": 10, "seconds": 5 * 3600,
+        "resets_at": time.time() + 5 * 3600 - 12 * 60}
+check("it behaves exactly as before",
+      abs(S.time_to_limit(bare) - S.time_to_limit(fresh)) < 5,
+      "%s vs %s" % (S.time_to_limit(bare), S.time_to_limit(fresh)))
+
+print("\nthe cache stamps each window as it stores it")
+S._remember_usage("codex:stamped", [{"label": "5h", "percent": 3}])
+stored = S._usage_cache()["codex:stamped"]["windows"][0]
+check("a stored window carries its read time",
+      isinstance(stored.get("read_at"), float), str(stored))
+
 shutil.rmtree(STATE, ignore_errors=True)
 print("\n%s — %d of the checks failed"
       % ("FAILED" if FAILED else "PASSED", len(FAILED)))
