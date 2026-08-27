@@ -1839,32 +1839,34 @@ def _profile_line(kind, p, width, usage=None):
     return line[: max(0, width - 1)]
 
 
-def binding_window(row):
-    """The window that will stop you first.
+def summary_window(row):
+    """The window the one-line view shows: the short one.
 
-    Ranked by how long each one has before it fills at the rate it is being
-    spent. That is the question the badge answers, and it is not the same as
-    which window is fullest — comparing percentages across windows of different
-    lengths rates 42% of a week as worse than 10% of five hours, which is
-    backwards.
+    There is room for one figure, and ranking the windows against each other
+    kept choosing the wrong one. A window that will not fill projects nothing,
+    so it dropped out of the comparison entirely, and a nearly empty weekly
+    window that did project beat a session window most of the way through. A
+    real account read 9% with two days left while its session sat at 58% and
+    six minutes from resetting.
 
-    A window that resets before it fills stops nobody. When none of them
-    projects a limit there is no rate to reason from, and the fullest,
-    soonest-resetting window is the best guess left; the account's own
-    `is_active` mark is preferred there, being its answer rather than ours.
+    The short window is the one you meet again and again in a working day, and a
+    weekly window at 9% is not what stops anybody. So it is simply the one
+    shown, with no ranking to get wrong.
+
+    A spent window is the exception. Once one is full the account is blocked,
+    and saying that outranks saying how the session is doing.
+
+    Every window is still there in the expanded view, each with its own
+    projection.
     """
     windows = [w for w in shown_windows(row)
                if isinstance(w.get("percent"), (int, float))]
     if not windows:
         return None
-    projected = [(t, w) for w in windows
-                 for t in [time_to_limit(w)] if t is not None]
-    if projected:
-        return min(projected,
-                   key=lambda p: (p[0], p[1].get("resets_at") or 0))[1]
-    marked = [w for w in windows if w.get("binding")]
-    pool = marked or windows
-    return max(pool, key=lambda w: (w["percent"], -(w.get("resets_at") or 0)))
+    spent = [w for w in windows if w["percent"] >= 100]
+    if spent:
+        return min(spent, key=lambda w: w.get("resets_at") or 0)
+    return min(windows, key=lambda w: window_seconds(w) or float("inf"))
 
 
 FIVE_HOURS = 5 * 3600
@@ -2047,7 +2049,7 @@ def usage_summary(row):
         return "", "stale"
     if row.get("state") == "unknown":
         return (row.get("problem") or "no usage read")[:USAGE_W], "stale"
-    window = binding_window(row)
+    window = summary_window(row)
     if not window:
         return "no windows", "stale"
     live = row.get("state") == "live"

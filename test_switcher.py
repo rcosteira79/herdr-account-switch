@@ -368,9 +368,9 @@ print("\nboth codex windows reach the badge")
 row = codex_row(100, 60)
 labels = [w.get("label") for w in S.shown_windows(row)]
 check("neither window is dropped", labels == ["5h", "weekly"], str(labels))
-check("the five-hour window is the binding one when it is full",
-      (S.binding_window(row) or {}).get("label") == "5h",
-      str((S.binding_window(row) or {}).get("label")))
+check("the five-hour window is the one shown when it is full",
+      (S.summary_window(row) or {}).get("label") == "5h",
+      str((S.summary_window(row) or {}).get("label")))
 summary = S.usage_summary(row)[0]
 check("the badge reports the exhausted window, not the roomy one",
       "100" in summary, summary.strip())
@@ -380,10 +380,11 @@ check("both windows are listed in the expanded view",
 print("\nand it is named the way claude's five-hour window is")
 check("5h reads as Session", S.window_name("5h") == "Session", S.window_name("5h"))
 
-print("\nthe weekly window still wins when it is the fuller one")
+print("\nand a fuller weekly window does not displace it")
 row = codex_row(10, 90)
-check("the weekly window binds", (S.binding_window(row) or {}).get("label") == "weekly",
-      str((S.binding_window(row) or {}).get("label")))
+check("the short window is still the one shown",
+      (S.summary_window(row) or {}).get("label") == "5h",
+      str((S.summary_window(row) or {}).get("label")))
 
 print("\nclaude's windows are untouched")
 claude = {"kind": "claude", "state": "live", "windows": [
@@ -421,23 +422,14 @@ check("the five-hour window fills sooner",
       S.time_to_limit(session) < S.time_to_limit(weekly),
       "%s vs %s" % (S._left(S.time_to_limit(session)),
                     S._left(S.time_to_limit(weekly))))
-check("and it is the one the badge reports",
-      (S.binding_window(codex(session, weekly)) or {}).get("label") == "5h",
-      str((S.binding_window(codex(session, weekly)) or {}).get("label")))
 
 print("\na window nobody is spending cannot stop anyone")
 idle = window("5h", 0, 5 * 3600, 12 * 60)
 check("an idle window projects nothing", S.time_to_limit(idle) is None)
-check("so the weekly window binds instead",
-      (S.binding_window(codex(idle, weekly)) or {}).get("label") == "weekly",
-      str((S.binding_window(codex(idle, weekly)) or {}).get("label")))
 
-print("\na window already spent stops you now")
+print("\na window already spent needs no rate to say so")
 spent = window("5h", 100, 5 * 3600, 4 * 3600)
-check("it needs no rate to say so", S.time_to_limit(spent) == 0)
-check("and it outranks anything still filling",
-      (S.binding_window(codex(spent, weekly)) or {}).get("label") == "5h",
-      str((S.binding_window(codex(spent, weekly)) or {}).get("label")))
+check("it is reached now", S.time_to_limit(spent) == 0)
 
 print("\na window that resets before it fills is not a limit")
 slow = window("weekly", 5, 168 * 3600, 100 * 3600)
@@ -448,11 +440,11 @@ burst = window("5h", 0.5, 5 * 3600, 30)
 check("half a percent in thirty seconds projects nothing",
       S.time_to_limit(burst) is None, str(S.time_to_limit(burst)))
 
-print("\nthe words and the ranking cannot disagree")
+print("\nthe figure shown agrees with that window's own line")
 row = codex(session, weekly)
-binding = S.binding_window(row)
-check("the binding window is the one whose line names a limit",
-      S.projection(binding).startswith("limit in"), S.projection(binding))
+shown = S.summary_window(row)
+check("the shown window's line names the same limit",
+      S.projection(shown).startswith("limit in"), S.projection(shown))
 
 print("\nthe badge counts down to the thing that matters")
 # Choosing the right window is half the answer. The badge's own figure was the
@@ -505,9 +497,9 @@ check("the same numbers read just now are further off",
 print("\nand a stale window can outrank a fuller fresh one")
 weekly = read_ago(0, "weekly", 42, 168 * 3600, 1601 * 60)
 row = {"kind": "codex", "state": "cached", "windows": [stale, weekly]}
-check("the five-hour window still binds",
-      (S.binding_window(row) or {}).get("label") == "5h",
-      str((S.binding_window(row) or {}).get("label")))
+check("the five-hour window is still the one shown",
+      (S.summary_window(row) or {}).get("label") == "5h",
+      str((S.summary_window(row) or {}).get("label")))
 
 print("\na window carrying no read time is read as current")
 bare = {"label": "5h", "percent": 10, "seconds": 5 * 3600,
@@ -521,6 +513,53 @@ S._remember_usage("codex:stamped", [{"label": "5h", "percent": 3}])
 stored = S._usage_cache()["codex:stamped"]["windows"][0]
 check("a stored window carries its read time",
       isinstance(stored.get("read_at"), float), str(stored))
+
+# ---- what the one-line view shows ----------------------------------------
+#
+# There is room for one figure, and ranking the windows against each other kept
+# choosing the wrong one: a window that will not fill projects nothing, so it
+# dropped out of the comparison, and a nearly empty weekly window that did
+# project beat a session window most of the way through. A real account showed
+# 9% with two days left while its session was 58% and six minutes from resetting.
+#
+# So the short window is the one shown. It is the one met again and again in a
+# working day, and a weekly window at 9% is not what stops anybody. A spent
+# window is the exception: once one is full the account is blocked, and saying
+# so outranks saying how the session is doing.
+
+print("\nthe one-line view shows the short window")
+short = window("5h", 37, 5 * 3600, 2 * 3600)
+long = window("weekly", 14, 168 * 3600, 20 * 3600)
+check("the short window is chosen",
+      (S.summary_window(codex(short, long)) or {}).get("label") == "5h",
+      str((S.summary_window(codex(short, long)) or {}).get("label")))
+check("even when only the long one projects a limit",
+      S.time_to_limit(short) is None and S.time_to_limit(long) is not None,
+      "short=%s long=%s" % (S.time_to_limit(short), S.time_to_limit(long)))
+text = S.usage_summary(codex(short, long))[0]
+check("and the figure is the short window's", "37%" in text, text.strip())
+
+print("\nit shows the short window even when nothing is being spent on it")
+check("an idle session still shows",
+      (S.summary_window(codex(window("5h", 0, 5 * 3600, 60 * 60), long)) or {})
+      .get("label") == "5h")
+
+print("\nbut a spent window outranks it, because the account is blocked")
+blocked = window("weekly", 100, 168 * 3600, 20 * 3600)
+check("the spent window is shown",
+      (S.summary_window(codex(window("5h", 49, 5 * 3600, 2 * 3600), blocked)) or {})
+      .get("label") == "weekly",
+      str((S.summary_window(codex(window("5h", 49, 5 * 3600, 2 * 3600), blocked)) or {})
+          .get("label")))
+
+print("\nclaude's three windows pick the session too")
+claude = {"kind": "claude", "state": "live", "windows": [
+    window("session", 37, 5 * 3600, 2 * 3600),
+    window("weekly_all", 14, 168 * 3600, 20 * 3600),
+    window("weekly Fable", 0, 168 * 3600, 20 * 3600)]}
+check("the session is shown",
+      (S.summary_window(claude) or {}).get("label") == "session",
+      str((S.summary_window(claude) or {}).get("label")))
 
 shutil.rmtree(STATE, ignore_errors=True)
 print("\n%s — %d of the checks failed"

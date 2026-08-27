@@ -311,7 +311,7 @@ enter            switch to the selected account
 s                save the current login as a new profile (prompts for a name)
 r                rename the selected profile
 x                delete the selected profile, including the one in use
-d                show / hide every usage window, not just the binding one
+d                show / hide every usage window, not just the short one
 u                re-read usage
 q / esc          close
 ```
@@ -325,14 +325,24 @@ should I switch to" on its own:
    spare            ░░░░░░░░   2% 5d04h  you@work.example · team
 ```
 
-That column is the **binding** window — the one that will stop you first, and
-the time beside it is when that happens. Which window that is comes from how
-long each one has before it fills at the rate you are spending it, not from
-which is fullest: 42% of a weekly window can be a day and a half away while 10%
-of a five-hour window is under two hours away. While a window is still filling
-the figure counts down to when it fills; once it is spent it counts down to the
-reset, which is when it lets you back in. `d` swaps it for every window, one
-account per block:
+That column is the **short** window — the session one, five hours on both
+providers. It is the window you meet again and again in a working day, so it is
+the one worth the single figure. A weekly window at 9% is not what stops you,
+whatever it projects about six days out.
+
+Ranking the windows against each other was tried and does not work: a window
+that will not fill projects nothing, drops out of the comparison, and hands the
+column to a nearly empty weekly window. One account read 11% with almost seven
+days left while its session sat at 69%.
+
+One exception. A **spent** window takes the column, because once one is full the
+account is blocked and that outranks how the session is doing.
+
+While the shown window is filling, the figure counts down to when it fills. Once
+it is spent it counts down to the reset, which is when it lets you back in.
+
+Every window is still there — `d` swaps the column for all of them, each with its
+own projection, one account per block:
 
 ```
        account       window   used              at this rate
