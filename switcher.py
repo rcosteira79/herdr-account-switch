@@ -2033,8 +2033,17 @@ def usage_summary(row):
         return "no windows", "stale"
     live = row.get("state") == "live"
     percent = window["percent"]
-    resets = window.get("resets_at")
-    left = _left(resets - time.time()) if resets else "—"
+    # Count down to whichever moment this window is about to hand you. While it
+    # is still filling that is when it fills, which is when work stops; the
+    # reset it used to show was a longer, softer number for the same window.
+    # Once it is spent the reset is the moment that matters, being when it lets
+    # you back in. A window with no rate to reason from has only its reset.
+    hits = time_to_limit(window)
+    if hits:
+        left = _left(hits)
+    else:
+        resets = window.get("resets_at")
+        left = _left(resets - time.time()) if resets else "—"
     text = SUMMARY_FMT % (bar_for(percent, 8), round(percent), left)
     return text[:USAGE_W], severity_of(percent if live else None)
 

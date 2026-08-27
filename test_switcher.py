@@ -454,6 +454,23 @@ binding = S.binding_window(row)
 check("the binding window is the one whose line names a limit",
       S.projection(binding).startswith("limit in"), S.projection(binding))
 
+print("\nthe badge counts down to the thing that matters")
+# Choosing the right window is half the answer. The badge's own figure was the
+# window's reset, so a window two hours from stopping work still read as the
+# four and three quarter hours until it refilled.
+filling = codex(window("5h", 10, 5 * 3600, 12 * 60),
+                window("weekly", 42, 168 * 3600, 1601 * 60))
+text = S.usage_summary(filling)[0]
+# 90% still to spend at 10% per twelve minutes is an hour and three quarters.
+check("a filling window counts down to when it fills", "1h48" in text, text.strip())
+check("and not to when it resets", "4h4" not in text, text.strip())
+
+emptied = codex(window("5h", 100, 5 * 3600, 4 * 3600),
+                window("weekly", 42, 168 * 3600, 1601 * 60))
+text = S.usage_summary(emptied)[0]
+check("a spent window counts down to when it lets you back in",
+      "1h00" in text or "59m" in text, text.strip())
+
 shutil.rmtree(STATE, ignore_errors=True)
 print("\n%s — %d of the checks failed"
       % ("FAILED" if FAILED else "PASSED", len(FAILED)))
