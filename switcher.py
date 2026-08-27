@@ -1890,7 +1890,8 @@ def window_name(label):
     """The short name to show, rather than the API's key."""
     text = str(label or "")
     lowered = text.lower()
-    if lowered in ("session", "five_hour"):
+    # "5h" is codex's key for the same thing claude calls a session.
+    if lowered in ("session", "five_hour", "5h"):
         return "Session"
     if lowered in ("weekly_all", "seven_day", "weekly"):
         return "Weekly"
@@ -1928,11 +1929,15 @@ def projection(window):
 
 
 def shown_windows(row):
-    """Codex reports one long window worth showing; claude reports three."""
-    windows = list((row or {}).get("windows") or [])
-    if (row or {}).get("kind") == "codex" and len(windows) > 1:
-        return [max(windows, key=lambda w: window_seconds(w) or 0)]
-    return windows
+    """Every window the account reported.
+
+    Codex windows used to be reduced to the longest one, on the reasoning that
+    the weekly figure was the one worth the space. It is not: the five-hour
+    window is what stops you hour to hour, and dropping it meant a five-hour
+    window sitting at 100% was replaced on the badge by a roomy weekly number.
+    The badge then reported capacity on an account that had none.
+    """
+    return list((row or {}).get("windows") or [])
 
 
 def usage_detail(row):
