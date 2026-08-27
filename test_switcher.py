@@ -346,6 +346,52 @@ check("an unknown kind reports nothing", usage_json("nosuchkind") == [],
 S.fetch_usage = REAL_FETCH_USAGE
 S.renew_profile = REAL_RENEW_PROFILE
 
+# ---- which codex windows reach the badge ---------------------------------
+#
+# Codex reports two: the five-hour one that stops you hour to hour, and the
+# weekly one. Only the longest was kept, so a five-hour window sitting at 100%
+# was replaced on the badge by a roomy weekly figure — the badge said there was
+# capacity on an account that had none.
+
+
+def codex_row(five_hour, weekly):
+    now = time.time()
+    return {"kind": "codex", "state": "live", "slug": "acct", "windows": [
+        {"label": "5h", "percent": five_hour, "seconds": 18000,
+         "resets_at": now + 3600},
+        {"label": "weekly", "percent": weekly, "seconds": 604800,
+         "resets_at": now + 5 * 86400},
+    ]}
+
+
+print("\nboth codex windows reach the badge")
+row = codex_row(100, 60)
+labels = [w.get("label") for w in S.shown_windows(row)]
+check("neither window is dropped", labels == ["5h", "weekly"], str(labels))
+check("the five-hour window is the binding one when it is full",
+      (S.binding_window(row) or {}).get("label") == "5h",
+      str((S.binding_window(row) or {}).get("label")))
+summary = S.usage_summary(row)[0]
+check("the badge reports the exhausted window, not the roomy one",
+      "100" in summary, summary.strip())
+check("both windows are listed in the expanded view",
+      len(S.usage_detail(row)) == 2, str(S.usage_detail(row)))
+
+print("\nand it is named the way claude's five-hour window is")
+check("5h reads as Session", S.window_name("5h") == "Session", S.window_name("5h"))
+
+print("\nthe weekly window still wins when it is the fuller one")
+row = codex_row(10, 90)
+check("the weekly window binds", (S.binding_window(row) or {}).get("label") == "weekly",
+      str((S.binding_window(row) or {}).get("label")))
+
+print("\nclaude's windows are untouched")
+claude = {"kind": "claude", "state": "live", "windows": [
+    {"label": "session", "percent": 12}, {"label": "weekly_all", "percent": 57},
+    {"label": "weekly Fable", "percent": 21}]}
+check("all three still show", len(S.shown_windows(claude)) == 3,
+      str(len(S.shown_windows(claude))))
+
 shutil.rmtree(STATE, ignore_errors=True)
 print("\n%s — %d of the checks failed"
       % ("FAILED" if FAILED else "PASSED", len(FAILED)))
