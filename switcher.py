@@ -1684,12 +1684,23 @@ def _ansi(text, severity, enabled):
 
 
 def cmd_usage(argv):
-    """What is left on every saved account, for both harnesses."""
+    """What is left on every saved account, for both harnesses.
+
+    `--kind` narrows it to one of them, the same way `list` does. Reading a
+    reading costs a request per saved account, and a token renewal on a parked
+    one, so a caller that cares about a single harness does not pay for the
+    other. An unknown kind reports nothing, because `usage_rows` reads an empty
+    kind list as "every kind".
+    """
+    kinds = KIND_ORDER
+    if "--kind" in argv:
+        wanted = argv[argv.index("--kind") + 1]
+        kinds = [wanted] if wanted in BACKENDS else []
     if "--json" in argv:
-        print(json.dumps(usage_rows(), indent=2))
+        print(json.dumps(usage_rows(kinds) if kinds else [], indent=2))
         return 0
     color = "--color" in argv
-    rows = usage_rows()
+    rows = usage_rows(kinds) if kinds else []
     if not rows:
         print("no profiles saved yet — run the save action")
         return 1
