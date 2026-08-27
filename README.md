@@ -319,9 +319,14 @@ should I switch to" on its own:
    spare            ░░░░░░░░   2% 5d04h  you@work.example · team
 ```
 
-That column is the **binding** window — the one closest to stopping you,
-preferring the one the API itself marks active. `d` swaps it for every window,
-one account per block:
+That column is the **binding** window — the one that will stop you first, and
+the time beside it is when that happens. Which window that is comes from how
+long each one has before it fills at the rate you are spending it, not from
+which is fullest: 42% of a weekly window can be a day and a half away while 10%
+of a five-hour window is under two hours away. While a window is still filling
+the figure counts down to when it fills; once it is spent it counts down to the
+reset, which is when it lets you back in. `d` swaps it for every window, one
+account per block:
 
 ```
        account       window   used              at this rate
@@ -474,6 +479,7 @@ command, which is why they are the easy place to restyle the badge.
 | `ACCOUNT_SWITCH_VERIFY_SWITCH` | `1` | ask the provider whether a saved login still works before installing it |
 | `ACCOUNT_SWITCH_USAGE_RENEW` | `1` | renew a parked account's token so its usage can be read |
 | `ACCOUNT_SWITCH_USAGE_TTL_S` | `120` | how long a usage answer is reused |
+| `ACCOUNT_SWITCH_SETTLED_PERCENT` | `5` | spend this much of a window and its rate counts, however new it is |
 | `ACCOUNT_SWITCH_RENEW_MARGIN_S` | `300` | renew this far ahead of a token's expiry |
 | `HERDR_BIN_PATH` | `herdr` | herdr binary (set by herdr when it invokes an action) |
 
