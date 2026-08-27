@@ -286,6 +286,12 @@ roughly one renewal per account per token lifetime, not one per refresh.
 `ACCOUNT_SWITCH_USAGE_RENEW=0` turns it off; parked accounts then show their
 last-seen numbers with an age, and the live ones stay accurate.
 
+A last-seen reading still projects. Each window records when it was read, and
+the spend rate is worked out against that moment rather than against the clock
+now — so an old reading brings its limit *closer* as it ages, instead of the
+frozen percentage making a busy account look calmer the longer nobody looked.
+The age beside the account is what says how much to trust it.
+
 ### Colours
 
 | var | default | meaning |

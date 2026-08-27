@@ -1172,7 +1172,13 @@ def _usage_cache():
 def _remember_usage(key, windows):
     cache = _usage_cache()
     entry = cache.get(key) or {}
-    entry.update({"at": time.time(), "windows": windows})
+    now = time.time()
+    # Stamp each window with the moment it was read. A rate worked out from a
+    # cached reading has to be measured against that moment, not against a clock
+    # that has kept running since — see _spend_rate.
+    windows = [dict(w, read_at=now) if isinstance(w, dict) else w
+               for w in (windows or [])]
+    entry.update({"at": now, "windows": windows})
     entry.pop("retry_after", None)
     cache[key] = entry
     _secure_dir(STATE_DIR)
@@ -1915,20 +1921,31 @@ def window_name(label):
     return text
 
 
-def _spend_rate(window):
-    """Percent per second, once enough has been spent for that to mean anything.
+def read_at_of(window):
+    """When this window's numbers were read. Now, for a window with no stamp."""
+    stamped = window.get("read_at")
+    return stamped if isinstance(stamped, (int, float)) else time.time()
 
-    None until then. A window minutes old can give a rate wild enough to claim
-    the limit is imminent, so there has to be some bar. Elapsed time alone is
-    the wrong one: a five-hour window can be a quarter spent before 5% of it
-    has run, and the start of a window is exactly when the answer matters. How
-    much has actually been spent is evidence too.
+
+def _spend_rate(window):
+    """Percent per second, measured at the moment the numbers were read.
+
+    None until enough has been spent for that to mean anything. A window minutes
+    old can give a rate wild enough to claim the limit is imminent, so there has
+    to be some bar. Elapsed time alone is the wrong one: a five-hour window can
+    be a quarter spent before 5% of it has run, and the start of a window is
+    exactly when the answer matters. How much has been spent is evidence too.
+
+    The rate belongs to the read, not to now. A cached reading holds its
+    percentage still while the clock keeps running, so dividing by the time
+    elapsed until now made a busy account look calmer the longer nobody looked
+    at it — backwards, for a number about what is going to stop you.
     """
     percent, resets = window.get("percent"), window.get("resets_at")
     if not isinstance(percent, (int, float)) or percent <= 0 or not resets:
         return None
     total = window_seconds(window)
-    left = resets - time.time()
+    left = resets - read_at_of(window)
     if not total or left <= 0:
         return None
     elapsed = total - left
@@ -1955,10 +1972,12 @@ def time_to_limit(window):
     rate = _spend_rate(window)
     if rate is None:
         return None
-    left = window["resets_at"] - time.time()
-    if percent + rate * left < 100:
+    read_at = read_at_of(window)
+    if percent + rate * (window["resets_at"] - read_at) < 100:
         return None
-    return (100 - percent) / rate
+    # The limit lands a fixed time after the read, so what is left of it now is
+    # that much less. A reading nobody has refreshed brings the answer closer.
+    return max(0.0, read_at + (100 - percent) / rate - time.time())
 
 
 def projection(window):
@@ -1979,7 +1998,7 @@ def projection(window):
         return "resets in %s" % until
     hits = time_to_limit(window)
     if hits is None:
-        landing = percent + rate * (resets - time.time())
+        landing = percent + rate * (resets - read_at_of(window))
         return "~%d%% left (resets in %s)" % (round(100 - landing), until)
     return "limit in %s (resets in %s)" % (_left(hits), until)
 
