@@ -6,6 +6,11 @@ window at 11am, you have a second one, and you don't want to re-auth in a
 browser to use it — or to find out three panes later which account the fleet
 has been billing.
 
+> **Tested with Claude Code and the Codex CLI only.** Those are the two
+> credential stores it knows how to read, back up and write, and it has a
+> backend for each. No other harness is supported: adding one means teaching it
+> that harness's store, not configuring it.
+
 ## What it does
 
 - **Named profiles** per agent kind. A profile is a snapshot of the credential
