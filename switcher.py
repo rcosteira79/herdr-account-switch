@@ -1065,6 +1065,9 @@ def renew_profile(kind, profile, force=False):
         _stage(kind, slug, payload)
         current = dict(current)
         current["payload"] = payload
+        # The credential changed, which is what saved_at records. Leaving it
+        # still made a repaired login look untouched to anything keyed on it.
+        current["saved_at"] = int(time.time())
         write_profile(current)
         _clear_staged(kind, slug)
     return payload
@@ -1207,6 +1210,10 @@ def usage_rows(kinds=None, refresh=True):
     for kind in kinds or KIND_ORDER:
         backend = BACKENDS[kind]
         live = backend.read_live()
+        # The live tokens are already in hand here, and this runs on every
+        # picker, panel and `list`, so it is where the saved copy stays current
+        # without waiting for a switch.
+        sync_live_profile(kind, live)
         live_fp = _fingerprint(backend.identity(live)) if live else None
         for profile in list_profiles(kind):
             key = "%s:%s" % (kind, profile["slug"])
@@ -1365,6 +1372,44 @@ def _clear_badge(pane_id):
         "--source", PLUGIN_ID,
         "--clear-token", TOKEN,
     )
+
+
+def sync_live_profile(kind, live=None):
+    """Bring the saved copy of the live account up to date. True if it moved.
+
+    The CLI renews the live tokens continuously, and a fresh `codex login`
+    replaces them outright. Only a switch used to copy that back, so a profile
+    could sit on a credential the provider had already retired while the live
+    one beside it worked — and the next switch would install the dead copy.
+
+    Cheap enough to call on any invocation: it compares what is already read
+    against what is on disk and writes only on a difference. Nothing is created
+    here — an account nobody saved stays unsaved, which is `save`'s job.
+    """
+    backend = BACKENDS.get(kind)
+    if backend is None:
+        return False
+    if live is None:
+        try:
+            live = backend.read_live()
+        except Exception:
+            return False
+    if live is None:
+        return False
+    identity = backend.identity(live)
+    fingerprint = _fingerprint(identity)
+    if not fingerprint:
+        return False
+    with _Lock():
+        profile = next((p for p in list_profiles(kind)
+                        if p.get("fingerprint") == fingerprint), None)
+        if profile is None or profile.get("payload") == live:
+            return False
+        profile["payload"] = live
+        profile["identity"] = identity
+        profile["saved_at"] = int(time.time())
+        write_profile(profile)
+    return True
 
 
 def stamp_badges():

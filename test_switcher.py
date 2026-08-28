@@ -561,6 +561,66 @@ check("the session is shown",
       (S.summary_window(claude) or {}).get("label") == "session",
       str((S.summary_window(claude) or {}).get("label")))
 
+# ---- keeping the saved copy of the live account current -------------------
+#
+# The CLI renews the live tokens continuously, and a fresh `codex login`
+# replaces them outright. Only a switch copied that back, so a profile could
+# hold a credential the provider had already retired while the live one beside
+# it worked — and the next switch would install the dead copy.
+
+
+def profile_named(label):
+    return next(p for p in S.list_profiles("claude") if p["label"] == label)
+
+
+def age_the_profile(label):
+    """Backdate a profile's saved_at, so a fresh write is visible."""
+    profile = profile_named(label)
+    profile["saved_at"] = 1
+    S.write_profile(profile)
+
+
+print("\nthe live account's saved copy is brought up to date")
+fake = reset()
+age_the_profile("Live")
+fake.store = claude_payload("LIVE", "renewed-access", "renewed-refresh",
+                            expired=False)
+check("it reports an update", S.sync_live_profile("claude") is True)
+saved = profile_named("Live")
+check("the saved payload matches the live one", saved["payload"] == fake.store,
+      str(saved["payload"].get("credentials", {}).get("claudeAiOauth", {})
+          .get("accessToken")))
+check("and saved_at moved with it", saved["saved_at"] > 1, str(saved["saved_at"]))
+
+print("\nand left alone when it already matches")
+check("nothing is written twice", S.sync_live_profile("claude") is False)
+
+print("\nan account nobody saved is not invented")
+fake.store = claude_payload("STRANGER", "a", "b", expired=False)
+check("an unsaved live account is skipped",
+      S.sync_live_profile("claude") is False)
+
+print("\nnothing logged in is not an error")
+fake.store = None
+check("it simply reports no update", S.sync_live_profile("claude") is False)
+
+# ---- a renewal is a credential change ------------------------------------
+#
+# renew_profile replaces a parked profile's tokens, which is exactly the event
+# saved_at exists to record. It left the timestamp untouched, so anything
+# keyed on saved_at — autocontinue remembers a refused login that way — could
+# not tell that the credential had been repaired.
+
+print("\na renewal records that the credential changed")
+reset()
+age_the_profile("Target")
+S._renewed_claude = lambda oauth: dict(oauth, accessToken="brand-new")
+S.renew_profile("claude", profile_named("Target"))
+saved = profile_named("Target")
+token = (saved["payload"]["credentials"]["claudeAiOauth"]["accessToken"])
+check("the token was replaced", token == "brand-new", token)
+check("and saved_at moved with it", saved["saved_at"] > 1, str(saved["saved_at"]))
+
 shutil.rmtree(STATE, ignore_errors=True)
 print("\n%s — %d of the checks failed"
       % ("FAILED" if FAILED else "PASSED", len(FAILED)))

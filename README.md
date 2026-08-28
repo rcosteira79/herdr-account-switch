@@ -502,6 +502,27 @@ command, which is why they are the easy place to restyle the badge.
 
 ## What the providers do to your logins
 
+### The live account's copy stays current on its own
+
+A switch is not the only moment the live tokens change. The CLI renews them as
+it works, and `claude login` or `codex login` replaces them outright. Waiting
+for a switch to copy that back left a profile holding a credential the provider
+had already retired, while the live one beside it worked — and the next switch
+would install the dead copy.
+
+So any read of the accounts — the picker, the usage panel, `list`, `usage` —
+compares the live login against its saved copy and rewrites the copy when they
+differ. It costs no network and writes nothing when they match. **Logging an
+account in again is therefore enough on its own**; there is no save to remember,
+and `save` would refuse anyway, since that account is already a profile.
+
+Nothing is created this way. An account no profile holds stays unsaved, which is
+what `save` is for.
+
+A renewal counts as a change too: renewing a parked profile's tokens moves its
+`saved_at`, so anything watching that field can tell the credential was
+repaired. `autocontinue` remembers a refused login exactly that way.
+
 A saved login can stop working while it sits on disk, and the snapshot gives no
 sign of it: it still parses, still installs, and only fails when an agent uses
 it. Three provider rules cause that, and they are why everything under "Not
