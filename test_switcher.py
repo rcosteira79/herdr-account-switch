@@ -621,6 +621,53 @@ token = (saved["payload"]["credentials"]["claudeAiOauth"]["accessToken"])
 check("the token was replaced", token == "brand-new", token)
 check("and saved_at moved with it", saved["saved_at"] > 1, str(saved["saved_at"]))
 
+# ---- a refused switch has to reach the screen -----------------------------
+#
+# The picker prints a refusal on its own status line. Every other path — the
+# `next` keybinding above all — wrote it to stderr, which herdr drops. The
+# failure then read as "the badge did not change", with nothing saying why.
+# A polled command must stay silent: `badge` runs once a second from the tab
+# bar, and a toast per tick would be worse than the silence it replaces.
+
+
+def run_main(*argv):
+    """main() with these arguments, keeping its stderr out of the output."""
+    real_argv, real_err = sys.argv, sys.stderr
+    sys.argv = ["switcher.py", *argv]
+    sys.stderr = io.StringIO()
+    try:
+        return S.main()
+    finally:
+        sys.argv, sys.stderr = real_argv, real_err
+
+
+def refuse(_argv):
+    raise S.SwitchError("codex: Mindera was refused — nothing changed")
+
+
+print("\na refused switch says so on screen, not only on stderr")
+told = []
+S.notify = lambda title, body="": told.append((title, body))
+S.refresh_stable_link = lambda: None
+real_dispatch = dict(S.DISPATCH)
+S.DISPATCH["next"] = refuse
+S.DISPATCH["badge"] = refuse
+code = run_main("next")
+check("it still reports failure", code == 1, str(code))
+check("it sends one notification", len(told) == 1, str(told))
+check("the notification carries the reason",
+      bool(told) and "was refused" in told[0][1], str(told))
+check("the title says what failed",
+      bool(told) and "switch" in told[0][0].lower(), str(told))
+
+print("\nbut a polled command never raises a toast")
+told.clear()
+code = run_main("badge")
+check("nothing was sent", told == [], str(told))
+check("it still reports failure", code == 1, str(code))
+S.DISPATCH.clear()
+S.DISPATCH.update(real_dispatch)
+
 shutil.rmtree(STATE, ignore_errors=True)
 print("\n%s — %d of the checks failed"
       % ("FAILED" if FAILED else "PASSED", len(FAILED)))

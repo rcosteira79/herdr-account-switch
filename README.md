@@ -491,7 +491,7 @@ command, which is why they are the easy place to restyle the badge.
 
 | var | default | meaning |
 |-----|---------|---------|
-| `ACCOUNT_SWITCH_NOTIFY` | `1` | herdr notification on each switch |
+| `ACCOUNT_SWITCH_NOTIFY` | `1` | herdr notification on each switch, and on a refused one |
 | `ACCOUNT_SWITCH_BADGE` | `1` | write the `$acct` pane token |
 | `ACCOUNT_SWITCH_BADGE_ALWAYS` | `0` | badge a kind with no saved profile too |
 | `ACCOUNT_SWITCH_GLYPH` | `👤` | the badge character |
@@ -538,6 +538,22 @@ account.
 
 Written up once, with the refusal codes and how each was established:
 [`docs/solutions/runtime-errors/saved-login-revoked-outside-the-plugin.md`](docs/solutions/runtime-errors/saved-login-revoked-outside-the-plugin.md).
+
+### A refused switch says so
+
+The picker prints a refusal on its own status line. Every other path only wrote
+it to stderr, and herdr drops that. The failure then read as "the badge did not
+change", with nothing saying why.
+
+`next`, `switch` and `save` now send the reason as a herdr notification. A
+completed switch already sent one, so the two match. `ACCOUNT_SWITCH_NOTIFY=0`
+turns both off. Nothing polled sends one: `badge` runs once a second from the
+tab bar, and a notification per tick would be worse than the silence.
+
+Where that notification appears is herdr's setting, not this plugin's.
+`[ui.toast] delivery = "system"` hands it to macOS, which drops it when the
+alert style is off. `delivery = "herdr"` draws it inside herdr instead, and
+needs no permission from macOS.
 
 ## Fragility
 

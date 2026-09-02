@@ -2642,6 +2642,13 @@ def cmd_disable_badge(argv):
     return 0
 
 
+# What each account-changing command was doing, for the message when it fails.
+# These run from a herdr action, where stderr goes nowhere a person will see, so
+# a refusal has to say so on screen the way a completed switch already does.
+# Nothing polled belongs here: `badge` runs once a second from the tab bar, and
+# a toast per tick would be worse than the silence it replaces.
+NOTIFY_FAILURE = {"next": "switch", "switch": "switch", "save": "save"}
+
 DISPATCH = {
     "ui": cmd_ui,
     "enable-badge": cmd_enable_badge,
@@ -2673,6 +2680,9 @@ def main():
         return DISPATCH[sys.argv[1]](sys.argv[2:]) or 0
     except SwitchError as exc:
         print(f"account-switch: {exc}", file=sys.stderr)
+        doing = NOTIFY_FAILURE.get(sys.argv[1])
+        if doing:
+            notify(f"Accounts: {doing} failed", str(exc))
         return 1
 
 
