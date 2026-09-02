@@ -8,9 +8,11 @@ symptoms:
   - "A saved profile installs cleanly, the switch reports success, and the agent is signed out"
   - "A parked profile's access token is still valid by its own exp claim, but the provider answers 401"
   - "codex: a profile stops working with no switch, no renewal and no action by this plugin"
+  - "codex: a profile stops working right after that account's plan changes"
+  - "the only sign is an account badge that does not change"
 root_cause: logic_error
 resolution_type: code_fix
-tags: [oauth, refresh-token, revocation, codex, claude-code, credential-store]
+tags: [oauth, refresh-token, revocation, codex, claude-code, credential-store, plan-change]
 ---
 # Problem
 
@@ -20,7 +22,7 @@ agent uses it. `switch()` used to read the store back and compare the account
 identity, which proves the write landed and says nothing about whether the login
 still signs in.
 
-Three provider rules cause it:
+Four provider rules cause it:
 
 **A refresh token is single-use and rotates.** Renewing spends the stored one and
 the reply carries its replacement. Reusing a spent token is permanent — the
@@ -38,6 +40,16 @@ browser login to repair.
 
 A JWT's `exp` is a claim, not proof. A token the clock still calls valid gets a
 401 once its session is superseded.
+
+**An account's plan change revokes it too — observed once, not proven.**
+Established 2026-09-02. A saved codex profile stopped working with no login on
+this machine. The usage endpoint answered `401 token_invalidated`, and the
+forced refresh was refused. The dead snapshot's `id_token` carried
+`chatgpt_plan_type: team`. A fresh login on the same account carried
+`self_serve_business_prolite`, so the account had been upgraded between the two.
+What is established: the grant died, and the plan string changed across it. What
+is not: that the upgrade is what killed it. Check the snapshot's plan string
+against the live one before hunting anywhere else.
 
 **Codex revocation is scoped to the installation, not to the account.**
 `CODEX_HOME` contains an `installation_id`, and signing in revokes only grants
@@ -84,6 +96,8 @@ and, when the target's access token is clock-expired, one refresh rotation.
   copy that can no longer renew.
 - For codex, expect a login anywhere in `~/.codex` — including Codex desktop — to
   revoke the previous grant in that home.
+- Expect an upgraded account to look exactly like a revoked one. The snapshot
+  still names the old plan, and only a fresh login carries the new one.
 
 Covered by `test_switcher.py`: a retired profile is refused with the live store
 untouched and nothing written, a spent refresh token is refused, and being
