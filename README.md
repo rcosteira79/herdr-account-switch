@@ -530,11 +530,11 @@ repaired. `autocontinue` remembers a refused login exactly that way.
 
 A saved login can stop working while it sits on disk, and the snapshot gives no
 sign of it: it still parses, still installs, and only fails when an agent uses
-it. Three provider rules cause that, and they are why everything under "Not
+it. Four provider rules cause that, and they are why everything under "Not
 losing a login" above works the way it does — refresh tokens are single-use and
-rotate, a refusal counts only when the provider words it, and Codex revocation
-is scoped to the `installation_id` inside `CODEX_HOME` rather than to the
-account.
+rotate, a refusal counts only when the provider words it, an upgraded account
+looks exactly like a revoked one, and Codex revocation is scoped to the
+`installation_id` inside `CODEX_HOME` rather than to the account.
 
 Written up once, with the refusal codes and how each was established:
 [`docs/solutions/runtime-errors/saved-login-revoked-outside-the-plugin.md`](docs/solutions/runtime-errors/saved-login-revoked-outside-the-plugin.md).
