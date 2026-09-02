@@ -27,6 +27,7 @@ FAILED = []
 # Kept so the later checks can put the real ones back after faking them.
 REAL_RENEW_PROFILE = S.renew_profile
 REAL_FETCH_USAGE = S.fetch_usage
+REAL_NOTIFY = S.notify
 
 
 def check(name, ok, detail=""):
@@ -665,6 +666,13 @@ told.clear()
 code = run_main("badge")
 check("nothing was sent", told == [], str(told))
 check("it still reports failure", code == 1, str(code))
+print("\nand a missing herdr never turns a refusal into a traceback")
+told.clear()
+S.notify = REAL_NOTIFY
+S.herdr = raises(FileNotFoundError(2, "No such file or directory", "herdr"))
+code = run_main("next")
+check("the refusal is still reported, and nothing is raised", code == 1,
+      str(code))
 S.DISPATCH.clear()
 S.DISPATCH.update(real_dispatch)
 

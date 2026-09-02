@@ -170,7 +170,12 @@ def notify(title, body=""):
     args = ["notification", "show", title, "--sound", "none"]
     if body:
         args += ["--body", body]
-    herdr(*args)
+    try:
+        herdr(*args)
+    except OSError:
+        # No herdr to notify through. This also runs on the failure path, where
+        # a traceback would bury the very message it was called to carry.
+        pass
 
 
 class _Lock:
