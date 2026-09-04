@@ -33,8 +33,10 @@ import json
 import os
 import platform
 import re
+import signal
 import subprocess
 import sys
+import tempfile
 import urllib.error
 import urllib.request
 from datetime import datetime
@@ -136,19 +138,94 @@ GLYPH = _setting("ACCOUNT_SWITCH_GLYPH") or "\N{BUST IN SILHOUETTE}"  # 👤
 # with no glyph.
 BADGE_FORMAT = _setting("ACCOUNT_SWITCH_BADGE_FORMAT") or "{glyph} {name}"
 SEPARATOR = _setting("ACCOUNT_SWITCH_SEPARATOR") or " · "
+# How long any one command we shell out to may take before it is abandoned.
+# Generous: it is a backstop against never finishing, not a performance budget.
+COMMAND_TIMEOUT_S = _num_env("ACCOUNT_SWITCH_COMMAND_TIMEOUT_S", 30.0)
+# How long to wait for another switch's lock before refusing. A real switch
+# holds it for well under a second, so this never trips in normal use.
+LOCK_TIMEOUT_S = _num_env("ACCOUNT_SWITCH_LOCK_TIMEOUT_S", 5.0)
 
 
 class SwitchError(Exception):
     """A switch that could not be completed (live store left untouched)."""
 
 
+# ---- running a command ----------------------------------------------------
+
+def _abandon(proc):
+    """Kill a command's whole process group, not only the command.
+
+    Killing the command alone is not enough: something it started can inherit
+    the command's own descriptors and outlive it, so the group goes rather
+    than the one process.
+    """
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except OSError:
+        pass
+    try:
+        proc.wait(timeout=1)
+    except subprocess.TimeoutExpired:
+        pass
+
+
+def _run(argv, stdin_text=None, timeout=None):
+    """Run one command, and wait only on the command itself.
+
+    Output goes to temporary files rather than pipes, because a pipe is read
+    until end of file and not until the child exits. Those are the same moment
+    only while nothing else holds the write end. A picker was found stopped in
+    exactly that read, holding the switch lock: the command had already exited
+    and something it had started still held the write end. Every later picker
+    and every `next` queued behind that lock, the oldest for eleven hours, and
+    each of them drew a blank window and said nothing. A file ends when the
+    command does, so a process that outlives it cannot hold us.
+
+    The timeout is the remaining backstop, for a command that never exits at
+    all. The command runs in its own session, so the whole group can be cut
+    loose then and not only the process that has already left.
+
+    Returns a CompletedProcess, and never raises on a non-zero exit. A command
+    that had to be abandoned reports a failure, the same as one that failed.
+    """
+    if timeout is None:
+        timeout = COMMAND_TIMEOUT_S
+    with tempfile.TemporaryFile(mode="w+") as out, \
+            tempfile.TemporaryFile(mode="w+") as err:
+        # Input goes to a file too. A secret handed over this way is as absent
+        # from `ps` output as one written down a pipe, and a command that never
+        # reads it cannot wedge the write.
+        stdin = None
+        if stdin_text is not None:
+            stdin = tempfile.TemporaryFile(mode="w+")
+            stdin.write(stdin_text)
+            stdin.seek(0)
+        try:
+            proc = subprocess.Popen(
+                argv, stdout=out, stderr=err,
+                stdin=stdin if stdin is not None else subprocess.DEVNULL,
+                text=True, start_new_session=True,
+            )
+        finally:
+            if stdin is not None:
+                stdin.close()
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            _abandon(proc)
+            return subprocess.CompletedProcess(
+                argv, 1, "", "no answer in %gs, gave up on it" % timeout)
+        out.seek(0)
+        err.seek(0)
+        return subprocess.CompletedProcess(
+            argv, proc.returncode, out.read(), err.read())
+
+
 # ---- herdr plumbing -------------------------------------------------------
 
 def herdr(*args):
     """Run the herdr CLI; return CompletedProcess (never raises on non-zero)."""
-    return subprocess.run(
-        [HERDR, *args], capture_output=True, text=True, check=False
-    )
+    return _run([HERDR, *args])
 
 
 def live_agents():
@@ -187,6 +264,10 @@ class _Lock:
     open file rather than on the process, so a second open() inside the first
     would queue behind a lock this very process already holds, and wait for
     ever.
+
+    The wait is bounded, because flock has no timeout of its own. One picker
+    stuck while holding this lock used to stop every later picker and every
+    `next`, for as long as it stayed stuck, without a word on screen.
     """
 
     _depth = 0
@@ -195,8 +276,25 @@ class _Lock:
     def __enter__(self):
         if _Lock._depth == 0:
             _secure_dir(STATE_DIR)
-            _Lock._file = open(LOCK, "w")
-            fcntl.flock(_Lock._file, fcntl.LOCK_EX)
+            handle = open(LOCK, "w")
+            began = time.time()
+            while True:
+                try:
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                # Only "someone else holds it" is waited out. A lock that
+                # cannot be taken at all still raises, rather than spending the
+                # timeout to report a holder that was never there.
+                except BlockingIOError:
+                    if time.time() - began >= LOCK_TIMEOUT_S:
+                        handle.close()
+                        raise SwitchError(
+                            "another switch is still running — it has held the "
+                            "lock for over %gs and may be stuck; nothing "
+                            "changed" % LOCK_TIMEOUT_S
+                        )
+                    time.sleep(0.05)
+            _Lock._file = handle
         _Lock._depth += 1
         return self
 
@@ -328,9 +426,8 @@ class ClaudeBackend(Backend):
             ["-a", getpass.getuser(), "-w"],
             ["-w"],  # some installs store it under a different account name
         ):
-            r = subprocess.run(
-                ["security", "find-generic-password", "-s", self.KEYCHAIN_SERVICE, *args],
-                capture_output=True, text=True, check=False,
+            r = _run(
+                ["security", "find-generic-password", "-s", self.KEYCHAIN_SERVICE, *args]
             )
             if r.returncode == 0 and r.stdout.strip():
                 try:
@@ -352,9 +449,7 @@ class ClaudeBackend(Backend):
             (base + ["-w", blob], None),
         ]
         for argv, stdin in attempts:
-            subprocess.run(
-                argv, input=stdin, capture_output=True, text=True, check=False
-            )
+            _run(argv, stdin_text=stdin)
             if self._keychain_read() == data:
                 return True
         return False

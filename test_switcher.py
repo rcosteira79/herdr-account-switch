@@ -7,6 +7,7 @@ Nothing here touches a real credential store, a real keychain, or the network:
 the state directory is a temporary one, the credential backend is a fake, and
 the HTTP layer is replaced. A test that reached any of those could cost a login.
 """
+import fcntl
 import io
 import json
 import os
@@ -225,6 +226,114 @@ with S._Lock():
 check("a nested lock did not deadlock", True)
 check("the lock is released once the outer block ends",
       S._Lock._depth == 0 and S._Lock._file is None)
+
+# ---- never waiting for ever ----------------------------------------------
+#
+# A picker was found holding the switch lock while stuck inside one command
+# that never came back. Seven more pickers and `next` runs had queued behind
+# that lock, the oldest for eleven hours: a blank window, and nothing said
+# anywhere. Both halves are checked here — the command, and the lock.
+
+print("\na command that never answers is abandoned")
+REAL_BIN, REAL_TIMEOUT = S.HERDR, S.COMMAND_TIMEOUT_S
+S.HERDR, S.COMMAND_TIMEOUT_S = "sleep", 1.0
+began = time.time()
+res = S.herdr("60")
+took = time.time() - began
+S.HERDR, S.COMMAND_TIMEOUT_S = REAL_BIN, REAL_TIMEOUT
+check("it comes back at all", res.returncode != 0, str(res.returncode))
+check("and close to the timeout, not the command", took < 15, "%.1fs" % took)
+
+print("\na command that exits while something it started holds the output")
+# This is the shape that wedged the picker, and the one a `timeout=` on the
+# read does not fix: the command has already exited, so no wait on the command
+# is ever reached. The shell here exits at once and the sleep it leaves behind
+# keeps the command's own stdout open. A pipe is read to end of file, so the
+# read waits on the survivor. A file ends when the command does.
+S.HERDR, S.COMMAND_TIMEOUT_S = "sh", 20.0
+began = time.time()
+res = S.herdr("-c", "echo done; sleep 30 & exit 0")
+took = time.time() - began
+S.HERDR, S.COMMAND_TIMEOUT_S = REAL_BIN, REAL_TIMEOUT
+check("it does not wait for the survivor", took < 5, "%.1fs" % took)
+check("and the command's own output is there", res.stdout.strip() == "done",
+      repr(res.stdout))
+
+print("\nand a command that answers is unchanged")
+S.HERDR = "echo"
+res = S.herdr("hello")
+check("the output is returned", res.stdout.strip() == "hello", repr(res.stdout))
+check("with its exit code", res.returncode == 0, str(res.returncode))
+S.HERDR = "sh"
+res = S.herdr("-c", "echo nope >&2; exit 3")
+S.HERDR = REAL_BIN
+check("a command that fails keeps its exit code", res.returncode == 3,
+      str(res.returncode))
+check("and its error output", res.stderr.strip() == "nope", repr(res.stderr))
+# The keychain write feeds the secret in this way rather than in argv, to keep
+# it out of `ps` output. The fake backend never reaches `security`, so this is
+# the one check that the input still arrives.
+res = S._run(["cat"], stdin_text="secret\n")
+check("input handed to a command still reaches it",
+      res.stdout.strip() == "secret", repr(res.stdout))
+
+print("\nthe lock gives up rather than waiting for ever")
+REAL_LOCK_TIMEOUT = S.LOCK_TIMEOUT_S
+S.LOCK_TIMEOUT_S = 0.5
+S._secure_dir(S.STATE_DIR)
+# flock keys on the open file, not on the process, so a second handle here is
+# as much of a stranger to _Lock as another picker would be.
+holder = open(S.LOCK, "w")
+fcntl.flock(holder, fcntl.LOCK_EX)
+signal.alarm(10)
+began = time.time()
+refusal = None
+try:
+    with S._Lock():
+        pass
+except S.SwitchError as exc:
+    refusal = str(exc)
+took = time.time() - began
+signal.alarm(0)
+check("it gave up", refusal is not None, "it took a held lock")
+check("after the timeout, not for ever", took < 5, "%.1fs" % took)
+check("the message says another switch is holding it",
+      bool(refusal) and "another switch" in refusal, str(refusal))
+check("and says it may be stuck", bool(refusal) and "may be stuck" in refusal,
+      str(refusal))
+check("and how long it was held for", bool(refusal) and "0.5s" in refusal,
+      str(refusal))
+check("the refused attempt left no lock of its own behind",
+      S._Lock._depth == 0 and S._Lock._file is None)
+
+print("\nbut a lock nobody holds is still taken at once, and still nests")
+fcntl.flock(holder, fcntl.LOCK_UN)
+holder.close()
+signal.alarm(5)
+began = time.time()
+with S._Lock():
+    with S._Lock():
+        pass
+    check("the inner block did not release the outer one",
+          S._Lock._depth == 1 and S._Lock._file is not None)
+took = time.time() - began
+signal.alarm(0)
+check("it was taken without waiting", took < 0.5, "%.2fs" % took)
+check("and released once, at the end", S._Lock._depth == 0 and S._Lock._file is None)
+
+print("\nand a switch the lock refuses says so, instead of hanging")
+fake = reset()
+S.LOCK_TIMEOUT_S = 0.5
+holder = open(S.LOCK, "w")
+fcntl.flock(holder, fcntl.LOCK_EX)
+msg, err = switch()
+fcntl.flock(holder, fcntl.LOCK_UN)
+holder.close()
+S.LOCK_TIMEOUT_S = REAL_LOCK_TIMEOUT
+check("the switch was refused", msg is None, str(msg))
+check("with a reason the picker can print",
+      bool(err) and "may be stuck" in err, str(err))
+check("and the live login was never touched", fake.store.get("who") == "LIVE")
 
 print("\nthe badge names the agent when it shows more than one account")
 S.BACKENDS["claude"] = S.ClaudeBackend()

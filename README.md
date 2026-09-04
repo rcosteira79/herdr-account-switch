@@ -502,6 +502,8 @@ command, which is why they are the easy place to restyle the badge.
 | `ACCOUNT_SWITCH_USAGE_TTL_S` | `120` | how long a usage answer is reused |
 | `ACCOUNT_SWITCH_SETTLED_PERCENT` | `5` | spend this much of a window and its rate counts, however new it is |
 | `ACCOUNT_SWITCH_RENEW_MARGIN_S` | `300` | renew this far ahead of a token's expiry |
+| `ACCOUNT_SWITCH_COMMAND_TIMEOUT_S` | `30` | how long any one command may take before it is abandoned |
+| `ACCOUNT_SWITCH_LOCK_TIMEOUT_S` | `5` | how long to wait for another switch before refusing |
 | `HERDR_BIN_PATH` | `herdr` | herdr binary (set by herdr when it invokes an action) |
 
 
