@@ -671,16 +671,17 @@ check("the session is shown",
       (S.summary_window(claude) or {}).get("label") == "session",
       str((S.summary_window(claude) or {}).get("label")))
 
-# ---- the column title, and the two rows that are not a limit -------------
+# ---- the column title, and the rows that are not a limit -----------------
 #
 # The figure counts down to when the window fills, but the column was still
 # titled "resets in" from before it did. A session at 10% twelve minutes in read
 # "1h47" under that title while its reset was 4h48 away.
 #
-# The title names the limit, because that is nearly every row. The two rows
-# where the figure is a reset — a spent window, and one with no rate to reason
-# from — carry a mark, so the exception says so rather than reading as a limit
-# that is not coming.
+# The title names the limit, because that is what nearly every row holds. A row
+# with no limit to count down to shows its reset instead, and carries a mark so
+# it does not read as a limit that is not coming. Three windows have no limit:
+# a spent one, one with no rate to reason from yet, and one whose rate will not
+# fill it before it resets.
 
 print("\nthe column title names what the figure counts down to")
 check("it says limit in", S.SUMMARY_HEAD.endswith("limit in"),
@@ -688,24 +689,19 @@ check("it says limit in", S.SUMMARY_HEAD.endswith("limit in"),
 check("and no longer claims to be the reset",
       "resets in" not in S.SUMMARY_HEAD, repr(S.SUMMARY_HEAD))
 
-print("\na filling window's figure is a limit, and is not marked")
-filling = codex(window("5h", 10, 5 * 3600, 12 * 60),
-                window("weekly", 42, 168 * 3600, 1601 * 60))
-text = S.usage_summary(filling)[0]
-check("it counts down to the limit", "1h47" in text or "1h48" in text,
-      text.strip())
-check("and carries no reset mark", S.RESET_MARK not in text, text.strip())
+# `filling` and `emptied` are the two rows the section above already checked the
+# figure of. What is checked here is which of them is marked.
+print("\na figure that is a limit carries no mark")
+check("the filling window is unmarked",
+      S.RESET_MARK not in S.usage_summary(filling)[0],
+      S.usage_summary(filling)[0].strip())
 
 print("\na spent window's figure is a reset, and says so")
-emptied = codex(window("5h", 100, 5 * 3600, 4 * 3600),
-                window("weekly", 42, 168 * 3600, 1601 * 60))
 text = S.usage_summary(emptied)[0]
-check("it counts down to the reset", "1h00" in text or "59m" in text,
-      text.strip())
-check("and the mark says which", text.rstrip().endswith(S.RESET_MARK),
+check("the mark says which", text.rstrip().endswith(S.RESET_MARK),
       text.strip())
 
-print("\nand so does a window with no rate to reason from")
+print("\nso does a window with no rate to reason from yet")
 idle = codex(window("5h", 0, 5 * 3600, 12 * 60),
              window("weekly", 42, 168 * 3600, 1601 * 60))
 text = S.usage_summary(idle)[0]
@@ -714,15 +710,38 @@ check("an idle session shows its reset",
 check("marked, so it does not read as a limit that is not coming",
       text.rstrip().endswith(S.RESET_MARK), text.strip())
 
+print("\nand so does one whose rate will not fill it")
+# The commonest marked row of the three, and the one a percentage hides: 20%
+# two hours in has a settled rate, and still lands at 50% by its reset.
+unhurried = codex(window("5h", 20, 5 * 3600, 2 * 3600),
+                  window("weekly", 42, 168 * 3600, 1601 * 60))
+check("it has a rate", S._spend_rate(unhurried["windows"][0]) is not None)
+check("but no limit", S.time_to_limit(unhurried["windows"][0]) is None)
+text = S.usage_summary(unhurried)[0]
+check("so the figure is its reset", "2h59" in text or "3h00" in text,
+      text.strip())
+check("and it is marked", text.rstrip().endswith(S.RESET_MARK), text.strip())
+
 print("\nthe mark fits the column it is written in")
-# The longest figure is a codex weekly window, which resets up to seven days
-# out. The mark has to fit beside it, not push it out of the column.
+# A codex weekly window resetting seven days out is the longest figure any
+# provider reports, and it fills the column to its edge.
 week = {"kind": "codex", "state": "live",
         "windows": [window("weekly", 0, 168 * 3600, 60)]}
 text = S.usage_summary(week)[0]
 check("the longest reset still fits", "6d23h" in text, text.strip())
 check("with its mark", text.rstrip().endswith(S.RESET_MARK), text.strip())
-check("and inside the column width", len(text) <= S.USAGE_W,
+check("and it fills the column exactly", len(text) == S.USAGE_W,
+      "%d != %d: %s" % (len(text), S.USAGE_W, text.strip()))
+
+print("\nand a longer window than any provider reports keeps its mark")
+# Nothing reports a thirty-day tier today. If one arrives, the figure is six
+# characters on its own and the slice would take the mark off the end — leaving
+# a reset reading as a limit, which is the whole defect this column had.
+monthly = {"kind": "codex", "state": "live",
+           "windows": [window("30d", 0, 30 * 86400, 60)]}
+text = S.usage_summary(monthly)[0]
+check("it is still marked", text.rstrip().endswith(S.RESET_MARK), text.strip())
+check("and still inside the column", len(text) <= S.USAGE_W,
       "%d > %d: %s" % (len(text), S.USAGE_W, text.strip()))
 
 print("\na window that reports no reset is not marked")

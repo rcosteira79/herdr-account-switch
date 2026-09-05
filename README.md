@@ -347,10 +347,14 @@ While the shown window is filling, the figure counts down to when it fills —
 `1h32` above is when work stops on `main`, not when its session refills four
 hours from now. That is what the column is titled for.
 
-Two rows are not that. A **spent** window counts down to its reset, which is when
-it lets you back in, and a window with no rate to reason from has only its reset
-to show — `spare` above, at 2%, with nothing yet to project from. Both carry a
-`↺`, so a reset never reads as a limit that is not coming.
+Not every window has a limit to count down to, though. A **spent** one has
+already arrived at it, one too new has no rate to project from, and one being
+spent slowly enough never reaches it before it resets. `spare` above is the
+second of those: 2% spent, and not yet running long enough to say what that
+means.
+
+Those rows show the reset instead, and carry a `↺`. Without it a reset reads as
+a limit that is not coming, which is what the column said for every row before.
 
 Every window is still there — `d` swaps the column for all of them, each with its
 own projection, one account per block:

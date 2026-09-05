@@ -2032,13 +2032,13 @@ def _centred(text, width):
 DETAIL_FMT = "%-9s %3s%%  %s  %s"
 DETAIL_HEAD = "%s %s  %s  %s" % (
     _centred("window", 9), _centred("used", 4), _centred("", 10), "at this rate")
-# The collapsed view's one-line summary: bar, percent, time to the limit.
+# The collapsed view's one-line summary: bar, percent, and the moment the window
+# is about to hand you.
 SUMMARY_FMT = "%s %3d%% %s"
 SUMMARY_HEAD = "%s %s %s" % (
     _centred("", 8), _centred("used", 4), "limit in")
-# The figure is the limit on nearly every row, so the title names that, and the
-# rows where it is the reset instead carry this. One character is all the column
-# has to spare: a seven-day reset already fills it to the edge.
+# The figure is the limit on nearly every row, so the title names that, and a
+# row showing a reset instead carries this.
 RESET_MARK = "↺"
 
 
@@ -2209,9 +2209,10 @@ def usage_summary(row):
     # Once it is spent the reset is the moment that matters, being when it lets
     # you back in. A window with no rate to reason from has only its reset.
     #
-    # Those last two are the rows the column title does not describe, so they
-    # are marked. Unmarked, an untouched account reads "0% 4h48" under "limit
-    # in" — a limit that is not coming.
+    # A reset is any row the column title does not describe, so it is marked.
+    # Unmarked, an untouched account reads "0% 4h48" under "limit in" — a limit
+    # that is not coming. A window with a rate that will not fill it before it
+    # resets reads the same way, and is the commonest of the three.
     hits = time_to_limit(window)
     if hits:
         left = _left(hits)
@@ -2219,6 +2220,11 @@ def usage_summary(row):
         resets = window.get("resets_at")
         left = (_left(resets - time.time()) + RESET_MARK) if resets else "—"
     text = SUMMARY_FMT % (bar_for(percent, 8), round(percent), left)
+    # A seven-day reset fills the column to its edge, so nothing reported today
+    # is cut. A longer tier would be, and the mark is what the slice takes
+    # first — leaving a reset reading as a limit, which is the defect above.
+    if len(text) > USAGE_W and text.endswith(RESET_MARK):
+        text = text[:USAGE_W - 1] + RESET_MARK
     return text[:USAGE_W], severity_of(percent if live else None)
 
 
