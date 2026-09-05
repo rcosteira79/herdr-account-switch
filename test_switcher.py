@@ -671,6 +671,68 @@ check("the session is shown",
       (S.summary_window(claude) or {}).get("label") == "session",
       str((S.summary_window(claude) or {}).get("label")))
 
+# ---- the column title, and the two rows that are not a limit -------------
+#
+# The figure counts down to when the window fills, but the column was still
+# titled "resets in" from before it did. A session at 10% twelve minutes in read
+# "1h47" under that title while its reset was 4h48 away.
+#
+# The title names the limit, because that is nearly every row. The two rows
+# where the figure is a reset — a spent window, and one with no rate to reason
+# from — carry a mark, so the exception says so rather than reading as a limit
+# that is not coming.
+
+print("\nthe column title names what the figure counts down to")
+check("it says limit in", S.SUMMARY_HEAD.endswith("limit in"),
+      repr(S.SUMMARY_HEAD))
+check("and no longer claims to be the reset",
+      "resets in" not in S.SUMMARY_HEAD, repr(S.SUMMARY_HEAD))
+
+print("\na filling window's figure is a limit, and is not marked")
+filling = codex(window("5h", 10, 5 * 3600, 12 * 60),
+                window("weekly", 42, 168 * 3600, 1601 * 60))
+text = S.usage_summary(filling)[0]
+check("it counts down to the limit", "1h47" in text or "1h48" in text,
+      text.strip())
+check("and carries no reset mark", S.RESET_MARK not in text, text.strip())
+
+print("\na spent window's figure is a reset, and says so")
+emptied = codex(window("5h", 100, 5 * 3600, 4 * 3600),
+                window("weekly", 42, 168 * 3600, 1601 * 60))
+text = S.usage_summary(emptied)[0]
+check("it counts down to the reset", "1h00" in text or "59m" in text,
+      text.strip())
+check("and the mark says which", text.rstrip().endswith(S.RESET_MARK),
+      text.strip())
+
+print("\nand so does a window with no rate to reason from")
+idle = codex(window("5h", 0, 5 * 3600, 12 * 60),
+             window("weekly", 42, 168 * 3600, 1601 * 60))
+text = S.usage_summary(idle)[0]
+check("an idle session shows its reset",
+      "4h47" in text or "4h48" in text, text.strip())
+check("marked, so it does not read as a limit that is not coming",
+      text.rstrip().endswith(S.RESET_MARK), text.strip())
+
+print("\nthe mark fits the column it is written in")
+# The longest figure is a codex weekly window, which resets up to seven days
+# out. The mark has to fit beside it, not push it out of the column.
+week = {"kind": "codex", "state": "live",
+        "windows": [window("weekly", 0, 168 * 3600, 60)]}
+text = S.usage_summary(week)[0]
+check("the longest reset still fits", "6d23h" in text, text.strip())
+check("with its mark", text.rstrip().endswith(S.RESET_MARK), text.strip())
+check("and inside the column width", len(text) <= S.USAGE_W,
+      "%d > %d: %s" % (len(text), S.USAGE_W, text.strip()))
+
+print("\na window that reports no reset is not marked")
+undated = {"kind": "codex", "state": "live",
+           "windows": [{"label": "5h", "percent": 3, "seconds": 5 * 3600}]}
+text = S.usage_summary(undated)[0]
+check("it shows a dash", "—" in text, text.strip())
+check("and nothing is marked as a reset", S.RESET_MARK not in text,
+      text.strip())
+
 # ---- keeping the saved copy of the live account current -------------------
 #
 # The CLI renews the live tokens continuously, and a fresh `codex login`

@@ -325,9 +325,9 @@ Each account carries how much of it is left, so the picker answers "which one
 should I switch to" on its own:
 
 ```
-       account               used resets in
- ● main             █████░░░  66% 3d23h  you@example.com · max
-   spare            ░░░░░░░░   2% 5d04h  you@work.example · team
+       account               used limit in
+ ● main             █████░░░  66% 1h32   you@example.com · max
+   spare            ░░░░░░░░   2% 4h47↺  you@work.example · team
 ```
 
 That column is the **short** window — the session one, five hours on both
@@ -343,8 +343,14 @@ days left while its session sat at 69%.
 One exception. A **spent** window takes the column, because once one is full the
 account is blocked and that outranks how the session is doing.
 
-While the shown window is filling, the figure counts down to when it fills. Once
-it is spent it counts down to the reset, which is when it lets you back in.
+While the shown window is filling, the figure counts down to when it fills —
+`1h32` above is when work stops on `main`, not when its session refills four
+hours from now. That is what the column is titled for.
+
+Two rows are not that. A **spent** window counts down to its reset, which is when
+it lets you back in, and a window with no rate to reason from has only its reset
+to show — `spare` above, at 2%, with nothing yet to project from. Both carry a
+`↺`, so a reset never reads as a limit that is not coming.
 
 Every window is still there — `d` swaps the column for all of them, each with its
 own projection, one account per block:

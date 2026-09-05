@@ -2032,10 +2032,14 @@ def _centred(text, width):
 DETAIL_FMT = "%-9s %3s%%  %s  %s"
 DETAIL_HEAD = "%s %s  %s  %s" % (
     _centred("window", 9), _centred("used", 4), _centred("", 10), "at this rate")
-# The collapsed view's one-line summary: bar, percent, time to reset.
+# The collapsed view's one-line summary: bar, percent, time to the limit.
 SUMMARY_FMT = "%s %3d%% %s"
 SUMMARY_HEAD = "%s %s %s" % (
-    _centred("", 8), _centred("used", 4), "resets in")
+    _centred("", 8), _centred("used", 4), "limit in")
+# The figure is the limit on nearly every row, so the title names that, and the
+# rows where it is the reset instead carry this. One character is all the column
+# has to spare: a seven-day reset already fills it to the edge.
+RESET_MARK = "↺"
 
 
 def window_seconds(window):
@@ -2204,12 +2208,16 @@ def usage_summary(row):
     # reset it used to show was a longer, softer number for the same window.
     # Once it is spent the reset is the moment that matters, being when it lets
     # you back in. A window with no rate to reason from has only its reset.
+    #
+    # Those last two are the rows the column title does not describe, so they
+    # are marked. Unmarked, an untouched account reads "0% 4h48" under "limit
+    # in" — a limit that is not coming.
     hits = time_to_limit(window)
     if hits:
         left = _left(hits)
     else:
         resets = window.get("resets_at")
-        left = _left(resets - time.time()) if resets else "—"
+        left = (_left(resets - time.time()) + RESET_MARK) if resets else "—"
     text = SUMMARY_FMT % (bar_for(percent, 8), round(percent), left)
     return text[:USAGE_W], severity_of(percent if live else None)
 
