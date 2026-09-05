@@ -344,14 +344,14 @@ One exception. A **spent** window takes the column, because once one is full the
 account is blocked and that outranks how the session is doing.
 
 While the shown window is filling, the figure counts down to when it fills —
-`1h32` above is when work stops on `main`, not when its session refills four
+`1h32` above is when work stops on `main`, not when its session refills two
 hours from now. That is what the column is titled for.
 
-Not every window has a limit to count down to, though. A **spent** one has
-already arrived at it, one too new has no rate to project from, and one being
-spent slowly enough never reaches it before it resets. `spare` above is the
-second of those: 2% spent, and not yet running long enough to say what that
-means.
+Not every window has a limit still ahead of it, though. A **spent** one has
+arrived at it, one too new has no rate to project from, one being spent slowly
+enough never reaches it before it resets, and a cached reading can hold a limit
+the clock has already gone past. `spare` above is the second of those: 2% spent,
+and not yet running long enough to say what that means.
 
 Those rows show the reset instead, and carry a `↺`. Without it a reset reads as
 a limit that is not coming, which is what the column said for every row before.

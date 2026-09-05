@@ -2037,8 +2037,8 @@ DETAIL_HEAD = "%s %s  %s  %s" % (
 SUMMARY_FMT = "%s %3d%% %s"
 SUMMARY_HEAD = "%s %s %s" % (
     _centred("", 8), _centred("used", 4), "limit in")
-# The figure is the limit on nearly every row, so the title names that, and a
-# row showing a reset instead carries this.
+# The figure is the limit whenever there is one still ahead, so the title names
+# that, and a row showing a reset instead carries this.
 RESET_MARK = "↺"
 
 
@@ -2211,8 +2211,10 @@ def usage_summary(row):
     #
     # A reset is any row the column title does not describe, so it is marked.
     # Unmarked, an untouched account reads "0% 4h48" under "limit in" — a limit
-    # that is not coming. A window with a rate that will not fill it before it
-    # resets reads the same way, and is the commonest of the three.
+    # that is not coming. The question is whether a limit is still ahead, not
+    # which case this is: a window is also past one when its rate will not fill
+    # it before it resets, and when a cached reading's projected limit has gone
+    # by. The first of those is the commonest marked row of the four.
     hits = time_to_limit(window)
     if hits:
         left = _left(hits)
