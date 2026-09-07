@@ -264,15 +264,11 @@ credential.
 
 ### Where the numbers come from
 
-When ccstatusline is installed, the switcher also reads its local
-`~/.cache/ccstatusline/usage.json`. A reading is accepted only when its token
-fingerprint matches that profile's access token and it is newer than the
-switcher's reading. Its original timestamp is preserved. Both panes check for
-local updates on their UI ticks, even during a reporting API cooldown, without
-another network request. Missing or incompatible caches fall back to the
-provider endpoint. Values supplied directly to ccstatusline by Claude's
-status-line input are only available here if ccstatusline also saves them in
-that cache.
+The switcher fetches usage independently with each saved account's own
+credentials. It does not read ccstatusline's cache or require a status-line
+plugin. Concurrent switcher panes share a cache and serialize requests so
+they do not fetch the same expired reading at once. Open panes pick up newer
+readings from other switcher actions on their UI ticks.
 
 Each provider publishes the account's own allowance:
 

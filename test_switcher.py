@@ -23,7 +23,6 @@ os.environ["HERDR_PLUGIN_STATE_DIR"] = STATE
 os.environ["HERDR_PLUGIN_CONFIG_DIR"] = STATE
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import switcher as S  # noqa: E402
-S.CCSTATUSLINE_CACHE = os.path.join(STATE, "ccstatusline-usage.json")
 
 FAILED = []
 # Kept so the later checks can put the real ones back after faking them.
@@ -459,53 +458,44 @@ S.renew_profile = REAL_RENEW_PROFILE
 
 # ---- which codex windows reach the badge ---------------------------------
 
-print("\nccstatusline supplies newer usage during endpoint cooldown")
+print("\nconcurrent panes share independent provider requests")
 fake = reset()
-S._write_json_secret(S.USAGE_CACHE, {})
 S.renew_profile = lambda k, p, force=False: p.get("payload")
-S.fetch_usage = raises(AssertionError("local reading must not fetch"))
-payload = S.get_profile("claude", "target")["payload"]
-token = S._claude_auth(payload)[0]
-observed = time.time() - 30
-local = {"tokenHash": S.hashlib.sha256(token.encode()).hexdigest()[:16],
-         "sessionUsage": 100, "sessionResetAt": time.time() + 7200,
-         "weeklyUsage": 76, "weeklyResetAt": time.time() + 345600,
-         "weeklyOpusUsage": 0}
-S._write_json_secret(S.CCSTATUSLINE_CACHE, local)
-os.utime(S.CCSTATUSLINE_CACHE, (observed, observed))
-S._write_json_secret(S.USAGE_CACHE, {"claude:target": {
-    "at": observed - 3600, "windows": [{"label": "session", "percent": 29}],
-    "retry_after": time.time() + 600}})
-row = next(r for r in S.usage_rows(["claude"], refresh=False) if r["slug"] == "target")
-check("the read-only picker poll replaces 29% with authenticated 100%",
-      row["windows"][0]["percent"] == 100 and row["windows"][1]["percent"] == 76,
-      str(row))
-check("import keeps the actual observation time",
-      abs(row["at"] - observed) < .01
-      and abs(row["windows"][0]["read_at"] - observed) < .01, str(row))
-check("fresh local usage does not display our endpoint failure",
-      row["problem"] is None and "~" not in S.usage_summary(row)[0], str(row))
-check("local import keeps the endpoint cooldown",
-      S._usage_cache()["claude:target"]["retry_after"] > time.time())
-check("default zero model buckets do not invent extra windows",
-      len(row["windows"]) == 2, str(row["windows"]))
-check("the same status cache cannot be assigned to the other login",
-      S._ccstatusline_usage(fake.store) is None)
-newer = time.time()
-S._write_json_secret(S.USAGE_CACHE, {"claude:target": {
-    "at": newer, "windows": [{"label": "session", "percent": 99}]}})
-row = next(r for r in S.usage_rows(["claude"], refresh=False) if r["slug"] == "target")
-check("an older status cache cannot replace a newer provider reading",
-      row["windows"][0]["percent"] == 99, str(row))
-for invalid in ({**local, "tokenHash": "wrong"}, {**local, "error": "rate-limited"},
-                {"tokenHash": local["tokenHash"], "sessionUsage": float("nan")}, []):
-    S._write_json_secret(S.CCSTATUSLINE_CACHE, invalid)
-    check("an untrusted or unusable status cache is ignored",
-          S._ccstatusline_usage(payload) is None, str(invalid))
-with open(S.CCSTATUSLINE_CACHE, "w") as handle:
-    handle.write('{"sessionUsage":')
-check("a partially written status cache is ignored", S._ccstatusline_usage(payload) is None)
-os.remove(S.CCSTATUSLINE_CACHE)
+request_log = os.path.join(STATE, "request-count")
+for limited in (False, True):
+    S._write_json_secret(S.USAGE_CACHE, {})
+    with open(request_log, "w"):
+        pass
+    def counted_usage(*args):
+        with open(request_log, "a") as handle:
+            handle.write("request\n")
+        time.sleep(.1)
+        if limited:
+            raise http_error(429)
+        return [{"label": "session", "percent": 100}]
+    S.fetch_usage = counted_usage
+    read_fd, write_fd = os.pipe()
+    children = []
+    sys.stdout.flush()
+    for _ in range(2):
+        pid = os.fork()
+        if pid == 0:
+            os.close(write_fd)
+            os.read(read_fd, 1)
+            try:
+                S.usage_rows(["claude"])
+            except BaseException:
+                os._exit(1)
+            os._exit(0)
+        children.append(pid)
+    os.close(read_fd)
+    os.write(write_fd, b"xx")
+    os.close(write_fd)
+    statuses = [os.waitpid(pid, 0)[1] for pid in children]
+    with open(request_log) as handle:
+        count = len(handle.readlines())
+    check("two panes fetch each of two accounts once" + (" on 429" if limited else " on success"),
+          statuses == [0, 0] and count == 2, str((statuses, count)))
 S.fetch_usage = REAL_FETCH_USAGE
 S.renew_profile = REAL_RENEW_PROFILE
 
