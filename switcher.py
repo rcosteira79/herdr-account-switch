@@ -1955,13 +1955,65 @@ def cmd_stamp(argv):
     return 0
 
 
+def _badge_refresh_due(kinds):
+    """Active saved logins whose usage or last attempt has aged out."""
+    cache = _usage_cache()
+    now = time.time()
+    for kind in kinds:
+        live = BACKENDS[kind].read_live()
+        profile = active_profile(kind, live) if live else None
+        if not profile:
+            continue
+        key = "%s:%s" % (kind, profile["slug"])
+        entry = cache.get(key) or {}
+        last = max(entry.get("at") or 0, entry.get("badge_attempt_at") or 0)
+        if now - last > USAGE_TTL_S and now >= (entry.get("retry_after") or 0):
+            yield kind, key, live
+
+
+def cmd_badge_refresh(argv):
+    """Background reader; recheck identity and cache under the shared lock."""
+    kinds = [k for k in argv if k in BACKENDS] or KIND_ORDER
+    with _Lock():
+        for kind, key, live in _badge_refresh_due(kinds):
+            # Record attempts too: an outage or empty response must not cause
+            # another request on every tab-bar tick. Never renew a live login.
+            cache = _usage_cache()
+            entry = cache.setdefault(key, {})
+            entry["badge_attempt_at"] = time.time()
+            _secure_dir(STATE_DIR)
+            _write_json_secret(USAGE_CACHE, cache)
+            try:
+                windows = fetch_usage(kind, live)
+                if windows:
+                    _remember_usage(key, windows)
+            except urllib.error.HTTPError as exc:
+                if exc.code == 429:
+                    _rest_usage(key, _usage_retry_delay(exc))
+            except Exception:
+                pass  # Keep the last reading; retry at the next interval.
+    return 0
+
+
+def _schedule_badge_refresh(kinds):
+    if next(_badge_refresh_due(kinds), None) is None:
+        return
+    try:
+        subprocess.Popen(
+            [sys.executable, os.path.join(ROOT, "switcher.py"), "badge-refresh", *kinds],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True,
+        )
+    except OSError:
+        pass  # A failed launch must not hide the account badge.
+
+
 def cmd_badge(argv):
     """One line naming the live account(s), for `tab_bar_right`.
 
     Credentials are machine-wide per kind, so the account is the same on every
     pane. This prints it once for the tab bar instead of stamping every pane.
-    Reads cached usage without fetching: herdr re-runs it on its own interval.
-    Writes nothing and talks to no socket.
+    Prints cached usage immediately and schedules a refresh when it is due.
     """
     kinds = [k for k in argv if k in BACKENDS] or None
     labels = account_labels(kinds, include_usage=True)
@@ -1974,7 +2026,8 @@ def cmd_badge(argv):
         ((BACKENDS[kind].short + " ") if prefixed else "")
         + _format_badge(label, kind)
         for kind, label in labels.items()
-    ))
+    ), flush=True)
+    _schedule_badge_refresh(list(labels))
     return 0
 
 
@@ -2851,6 +2904,7 @@ DISPATCH = {
     "status": cmd_status,
     "stamp": cmd_stamp,
     "badge": cmd_badge,
+    "badge-refresh": cmd_badge_refresh,
     "list": cmd_list,
     "usage": cmd_usage,
     "usage-ui": cmd_usage_ui,

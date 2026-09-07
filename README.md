@@ -127,7 +127,8 @@ real directory if you want it.
 
 The `badge` command prints one line and exits — herdr re-runs it on the
 interval, so this needs no daemon and no `[[startup]]` hook. It reads the
-credential store and the plugin's usage cache: no network requests or writes. Naming a kind
+credential store and the plugin's usage cache, then starts a background usage
+refresh if one is due. Naming a kind
 (`badge claude`) prints that kind alone; `badge` with no argument prints every
 kind it can name, each prefixed with the agent's name:
 
@@ -137,9 +138,14 @@ Claude 👤 work 42% · Codex 👤 spare 18%
 
 The percentage is usage consumed in the same window selected by the account
 picker. It appears after the account name when a cached reading exists;
-`~42%` marks an old reading or a reporting cooldown. Opening the picker or
-usage panel refreshes the cache, and a successful switch check also updates it.
-Without a reading, the badge shows only the account name.
+`~42%` marks an old reading or a reporting cooldown. While herdr polls the badge,
+it refreshes the active account's usage every two minutes by default, respecting
+provider cooldowns. Set `usage_ttl_s = 300` for five minutes, or use
+`ACCOUNT_SWITCH_USAGE_TTL_S=300` in the command. New readings appear on the next
+tab-bar poll (30 seconds in the example above). Background requests keep slow
+responses from delaying the badge; failed reads retain the last percentage.
+Without a reading, the badge shows only the account name until a refresh succeeds.
+The picker, usage panel, and switch checks share the same cache.
 
 The badge cannot vary per pane or per tab, and that is not a limitation of the
 badge. A credential store is machine-wide per agent, so every claude pane bills
@@ -495,6 +501,9 @@ badge_format = "{glyph}{name}"
 
 # Percent at which a usage window turns amber, then red.
 usage_thresholds = "50,75"
+
+# Usage refresh interval in seconds, including the top-right badge.
+usage_ttl_s = 120
 
 # Override one colour of the four: ok, warn, crit, stale.
 usage_colors = "warn=magenta"

@@ -368,6 +368,9 @@ check("a format not naming the agent keeps the prefix",
 
 print("\nthe top-right badge puts cached usage after the active account name")
 saved_cache = S._usage_cache()
+real_popen = S.subprocess.Popen
+launched = []
+S.subprocess.Popen = lambda *a, **kw: launched.append((a, kw))
 fake = reset()
 S.BADGE_FORMAT = "{glyph} {name}"
 S.fetch_usage = raises(AssertionError("a badge must not fetch usage"))
@@ -411,6 +414,48 @@ check("an unsaved login gets no saved percentage", "%" not in tab_badge(), tab_b
 fake.store = None
 check("a logged-out badge gets no percentage", tab_badge() == "👤 logged out", tab_badge())
 check("rendering never writes credentials", fake.writes == 0)
+check("refresh workers detach from the badge's output",
+      bool(launched) and all(kw.get("start_new_session")
+                            and kw.get("stdout") == S.subprocess.DEVNULL
+                            and kw.get("stderr") == S.subprocess.DEVNULL
+                            and a[0][-2:] == ["badge-refresh", "claude"]
+                            for a, kw in launched))
+S.subprocess.Popen = real_popen
+
+print("\nbadge usage refreshes at the cache interval, only for the active login")
+fake = reset()
+S._write_json_secret(S.USAGE_CACHE, {})
+asked = []
+S.fetch_usage = lambda kind, payload: asked.append(payload["who"]) or [
+    {"label": "session", "percent": 23}]
+S.cmd_badge_refresh(["claude"])
+S.cmd_badge_refresh(["claude"])
+check("repeated ticks fetch only the live account once", asked == ["LIVE"], str(asked))
+check("the next badge reads the refreshed figure", tab_badge() == "👤 Live 23%", tab_badge())
+cache = S._usage_cache()
+for field in ("at", "badge_attempt_at"):
+    cache["claude:live"][field] = time.time() - S.USAGE_TTL_S - 1
+S._write_json_secret(S.USAGE_CACHE, cache)
+S.cmd_badge_refresh(["claude"])
+check("expiry triggers another read", asked == ["LIVE", "LIVE"], str(asked))
+
+for failure in (http_error(429), urllib.error.URLError("offline"), None):
+    S._write_json_secret(S.USAGE_CACHE, {})
+    asked.clear()
+    def failed_badge_read(kind, payload):
+        asked.append(payload["who"])
+        if failure:
+            raise failure
+        return []
+    S.fetch_usage = failed_badge_read
+    S.cmd_badge_refresh(["claude"])
+    S.cmd_badge_refresh(["claude"])
+    check("failed or empty reads wait before retrying: %s" % failure,
+          asked == ["LIVE"], str(asked))
+    if getattr(failure, "code", None) == 429:
+        check("badge throttling is shared with other usage readers",
+              S._usage_cache()["claude:live"]["retry_after"] > time.time())
+check("background refresh never writes credentials", fake.writes == 0)
 S._write_json_secret(S.USAGE_CACHE, saved_cache)
 S.fetch_usage = REAL_FETCH_USAGE
 
@@ -511,7 +556,7 @@ print("\nconcurrent panes share independent provider requests")
 fake = reset()
 S.renew_profile = lambda k, p, force=False: p.get("payload")
 request_log = os.path.join(STATE, "request-count")
-for limited in (False, True):
+for limited, badge_worker in ((False, False), (True, False), (False, True), (True, True)):
     S._write_json_secret(S.USAGE_CACHE, {})
     with open(request_log, "w"):
         pass
@@ -532,7 +577,10 @@ for limited in (False, True):
             os.close(write_fd)
             os.read(read_fd, 1)
             try:
-                S.usage_rows(["claude"])
+                if badge_worker:
+                    S.cmd_badge_refresh(["claude"])
+                else:
+                    S.usage_rows(["claude"])
             except BaseException:
                 os._exit(1)
             os._exit(0)
@@ -543,8 +591,11 @@ for limited in (False, True):
     statuses = [os.waitpid(pid, 0)[1] for pid in children]
     with open(request_log) as handle:
         count = len(handle.readlines())
-    check("two panes fetch each of two accounts once" + (" on 429" if limited else " on success"),
-          statuses == [0, 0] and count == 2, str((statuses, count)))
+    expected = 1 if badge_worker else 2
+    check(("two badge workers fetch the active account once" if badge_worker
+           else "two panes fetch each of two accounts once")
+          + (" on 429" if limited else " on success"),
+          statuses == [0, 0] and count == expected, str((statuses, count)))
 S.fetch_usage = REAL_FETCH_USAGE
 S.renew_profile = REAL_RENEW_PROFILE
 
