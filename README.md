@@ -127,13 +127,19 @@ real directory if you want it.
 
 The `badge` command prints one line and exits — herdr re-runs it on the
 interval, so this needs no daemon and no `[[startup]]` hook. It reads the
-credential store and nothing else: no socket, no writes. Naming a kind
+credential store and the plugin's usage cache: no network requests or writes. Naming a kind
 (`badge claude`) prints that kind alone; `badge` with no argument prints every
 kind it can name, each prefixed with the agent's name:
 
 ```
-Claude 👤 work · Codex 👤 spare
+Claude 👤 work 42% · Codex 👤 spare 18%
 ```
+
+The percentage is usage consumed in the same window selected by the account
+picker. It appears after the account name when a cached reading exists;
+`~42%` marks an old reading or a reporting cooldown. Opening the picker or
+usage panel refreshes the cache, and a successful switch check also updates it.
+Without a reading, the badge shows only the account name.
 
 The badge cannot vary per pane or per tab, and that is not a limitation of the
 badge. A credential store is machine-wide per agent, so every claude pane bills

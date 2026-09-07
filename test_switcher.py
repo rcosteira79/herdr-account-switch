@@ -51,6 +51,7 @@ class FakeBackend:
 
     kind = "claude"
     title = "Fake"
+    short = "Claude"
 
     def __init__(self):
         self.store = None
@@ -364,6 +365,54 @@ check("a format naming the agent suppresses the prefix",
       and S._names_agent("{agent:>7}"))
 check("a format not naming the agent keeps the prefix",
       not S._names_agent("{glyph} {name}") and not S._names_agent(""))
+
+print("\nthe top-right badge puts cached usage after the active account name")
+saved_cache = S._usage_cache()
+fake = reset()
+S.BADGE_FORMAT = "{glyph} {name}"
+S.fetch_usage = raises(AssertionError("a badge must not fetch usage"))
+S._write_json_secret(S.USAGE_CACHE, {})
+
+
+def tab_badge():
+    buffer = io.StringIO()
+    real, sys.stdout = sys.stdout, buffer
+    try:
+        S.cmd_badge(["claude"])
+    finally:
+        sys.stdout = real
+    return buffer.getvalue().strip()
+
+
+check("missing usage keeps the name", tab_badge() == "👤 Live", tab_badge())
+S._remember_usage("claude:target", [{"label": "session", "percent": 99}])
+check("another account's usage is never borrowed", tab_badge() == "👤 Live", tab_badge())
+S._remember_usage("claude:live", [
+    {"label": "session", "percent": 42, "window_seconds": 18000},
+    {"label": "weekly", "percent": 18, "window_seconds": 604800},
+])
+check("the short window follows the name", tab_badge() == "👤 Live 42%", tab_badge())
+check("pane labels keep their existing format", S.account_labels(["claude"]) == {"claude": "Live"})
+cache = S._usage_cache()
+cache["claude:live"]["at"] = time.time() - S.USAGE_TTL_S - 1
+S._write_json_secret(S.USAGE_CACHE, cache)
+check("old readings carry a tilde", tab_badge() == "👤 Live ~42%", tab_badge())
+S._remember_usage("claude:live", [{"label": "session", "percent": 0}])
+check("zero usage is shown", tab_badge() == "👤 Live 0%", tab_badge())
+S._rest_usage("claude:live", 300)
+check("a cooldown marks even a recent reading", tab_badge() == "👤 Live ~0%", tab_badge())
+S._remember_usage("claude:live", [
+    {"label": "session", "percent": 42}, {"label": "weekly", "percent": 100}])
+check("an exhausted window takes precedence", tab_badge() == "👤 Live 100%", tab_badge())
+fake.store = claude_payload("TARGET", "target-access", "target-refresh", expired=False)
+check("an account change picks its own usage", tab_badge() == "👤 Target 99%", tab_badge())
+fake.store = claude_payload("UNSAVED", "other-access", "other-refresh", expired=False)
+check("an unsaved login gets no saved percentage", "%" not in tab_badge(), tab_badge())
+fake.store = None
+check("a logged-out badge gets no percentage", tab_badge() == "👤 logged out", tab_badge())
+check("rendering never writes credentials", fake.writes == 0)
+S._write_json_secret(S.USAGE_CACHE, saved_cache)
+S.fetch_usage = REAL_FETCH_USAGE
 
 # ---- what another plugin can read off the profile list -------------------
 #

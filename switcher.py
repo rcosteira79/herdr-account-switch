@@ -1439,7 +1439,7 @@ def _age(seconds):
 
 # ---- badges ---------------------------------------------------------------
 
-def account_labels(kinds=None):
+def account_labels(kinds=None, include_usage=False):
     """{kind: label} for the kinds worth naming. One saved profile is enough.
 
     Saving a profile is the signal that you care which account is in use, and
@@ -1458,6 +1458,14 @@ def account_labels(kinds=None):
         current = active_profile(kind, live)
         if current:
             labels[kind] = current["label"]
+            if include_usage:
+                entry = _usage_cache().get("%s:%s" % (kind, current["slug"])) or {}
+                window = summary_window(entry)
+                if window:
+                    stale = (not entry.get("at") or usage_notice(entry)
+                             or time.time() < (entry.get("retry_after") or 0))
+                    labels[kind] = "%s %s%d%%" % (
+                        labels[kind], "~" if stale else "", round(window["percent"]))
         else:
             # Logged into something no profile has a copy of. Name it from the
             # live identity and mark it, rather than showing a bare "?".
@@ -1952,10 +1960,11 @@ def cmd_badge(argv):
 
     Credentials are machine-wide per kind, so the account is the same on every
     pane. This prints it once for the tab bar instead of stamping every pane.
-    Writes nothing and talks to no socket: herdr re-runs it on its own interval.
+    Reads cached usage without fetching: herdr re-runs it on its own interval.
+    Writes nothing and talks to no socket.
     """
     kinds = [k for k in argv if k in BACKENDS] or None
-    labels = account_labels(kinds)
+    labels = account_labels(kinds, include_usage=True)
     if not labels:
         return 0
     # Two accounts on one line need telling apart. Prefix them with the agent's
