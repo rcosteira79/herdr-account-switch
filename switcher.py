@@ -40,6 +40,7 @@ import tempfile
 import urllib.error
 import urllib.request
 from datetime import datetime
+from email.utils import parsedate_to_datetime
 import time
 
 PLUGIN_ID = os.environ.get("HERDR_PLUGIN_ID", "rcosteira.account-switch")
@@ -1241,10 +1242,11 @@ def proven_payload(kind, profile):
     if not VERIFY_SWITCH:
         return payload
     label = profile.get("label") or profile.get("slug") or kind
+    key = "%s:%s" % (kind, profile["slug"])
     try:
         payload = renew_profile(kind, profile) or payload
         try:
-            fetch_usage(kind, payload)
+            windows = fetch_usage(kind, payload)
         except urllib.error.HTTPError as exc:
             if exc.code != 401:
                 raise
@@ -1255,13 +1257,17 @@ def proven_payload(kind, profile):
             if not renewed:
                 raise
             payload = renewed
-            fetch_usage(kind, payload)
+            windows = fetch_usage(kind, payload)
+        if windows:
+            _remember_usage(key, windows)
     except urllib.error.HTTPError as exc:
         if exc.code == 401 or _refresh_refused(exc):
             raise SwitchError(
                 "%s: %s was refused — nothing changed; log that account in "
                 "again and save it" % (kind, label)
             )
+        if exc.code == 429:
+            _rest_usage(key, _usage_retry_delay(exc))
         return payload
     except Exception:
         return payload
@@ -1298,6 +1304,19 @@ def _rest_usage(key, seconds):
     _write_json_secret(USAGE_CACHE, cache)
 
 
+def _usage_retry_delay(exc):
+    """Respect the reporting endpoint's cooldown, with a safe fallback."""
+    raw = (exc.headers or {}).get("Retry-After", "")
+    try:
+        seconds = float(raw)
+    except (TypeError, ValueError):
+        try:
+            seconds = parsedate_to_datetime(raw).timestamp() - time.time()
+        except (TypeError, ValueError, OverflowError):
+            return USAGE_BACKOFF_S
+    return seconds if 0 < seconds < float("inf") else USAGE_BACKOFF_S
+
+
 def usage_rows(kinds=None, refresh=True):
     """One row per saved profile: its windows, and how current they are.
 
@@ -1325,6 +1344,8 @@ def usage_rows(kinds=None, refresh=True):
             # too. It used to refetch on every call, which is what earns a 429.
             stale = (time.time() - (entry.get("at") or 0)) > USAGE_TTL_S
             resting = time.time() < (entry.get("retry_after") or 0)
+            if resting:
+                problem = "rate limited"
             if refresh and stale and not resting:
                 try:
                     # A parked account's token has usually expired, so renewing
@@ -1355,7 +1376,7 @@ def usage_rows(kinds=None, refresh=True):
                     if code == 429:
                         # Asked too often. Sit out, or every later call compounds it.
                         problem = "rate limited"
-                        _rest_usage(key, USAGE_BACKOFF_S)
+                        _rest_usage(key, _usage_retry_delay(exc))
                     elif problem is None:
                         problem = "unreachable" if isinstance(
                             exc, urllib.error.URLError) else type(exc).__name__
@@ -1814,7 +1835,7 @@ def cmd_usage_ui(argv):
                 return
             if key in (ord("q"), 27):
                 return
-            if key == ord("r"):
+            if key == ord("r") or time.time() - fetched >= USAGE_TTL_S:
                 rows, fetched = usage_rows(), time.time()
 
     curses.wrapper(run)
@@ -2170,8 +2191,9 @@ def usage_detail(row):
     """[(text, severity)] — one line per window, for the expanded view."""
     if not row:
         return []
-    live = row.get("state") == "live"
-    out = []
+    notice = usage_notice(row)
+    live = row.get("state") == "live" and not notice
+    out = [(notice, "stale")] if notice else []
     for window in shown_windows(row):
         percent = window.get("percent")
         out.append((
@@ -2188,6 +2210,22 @@ def usage_detail(row):
     return out
 
 
+def usage_notice(row):
+    """Keep an old reading from looking like current available capacity.
+
+    Calculate age at render time: the picker can stay open long after its
+    initial successful read has expired.
+    """
+    at = row.get("at")
+    age = max(0, time.time() - at) if at is not None else row.get("age")
+    problem = row.get("problem")
+    if problem:
+        return problem + ("; read " + _age(age) if age is not None else "")
+    if age is not None and age > USAGE_TTL_S:
+        return "read " + _age(age)
+    return None
+
+
 def usage_summary(row):
     """"How much is left" for one profile row, sized for the picker column.
 
@@ -2198,10 +2236,10 @@ def usage_summary(row):
         return "", "stale"
     if row.get("state") == "unknown":
         return (row.get("problem") or "no usage read")[:USAGE_W], "stale"
+    notice = usage_notice(row)
     window = summary_window(row)
     if not window:
         return "no windows", "stale"
-    live = row.get("state") == "live"
     percent = window["percent"]
     # Count down to whichever moment this window is about to hand you. While it
     # is still filling that is when it fills, which is when work stops; the
@@ -2222,12 +2260,17 @@ def usage_summary(row):
         resets = window.get("resets_at")
         left = (_left(resets - time.time()) + RESET_MARK) if resets else "—"
     text = SUMMARY_FMT % (bar_for(percent, 8), round(percent), left)
+    if notice:
+        # Keep capacity useful during a reporting outage. The marker identifies
+        # the last-known percentage; details carry its age and refresh error.
+        # Borrow one bar cell so even ~100% leaves the reset column aligned.
+        text = "%s %5s %s" % (bar_for(percent, 7), "~%d%%" % round(percent), left)
     # A seven-day reset fills the column to its edge, so nothing reported today
     # is cut. A longer tier would be, and the mark is what the slice takes
     # first — leaving a reset reading as a limit, which is the defect above.
     if len(text) > USAGE_W and text.endswith(RESET_MARK):
         text = text[:USAGE_W - 1] + RESET_MARK
-    return text[:USAGE_W], severity_of(percent if live else None)
+    return text[:USAGE_W], severity_of(percent)
 
 
 def _center_win(stdscr, height, width):
@@ -2316,10 +2359,14 @@ def cmd_ui(argv):
         sel = 0
         message = ""
         details = False
-        # Read once on open, then from cache: the endpoint rate-limits, and the
-        # picker's own tick is far faster than usage changes.
+        # Poll only at the cache interval; usage_rows also observes each
+        # account's Retry-After, including while this picker stays open.
         usage = {"%s:%s" % (r["kind"], r["slug"]): r for r in usage_rows()}
+        usage_fetched = time.time()
         while True:
+            if time.time() - usage_fetched >= USAGE_TTL_S:
+                usage = {"%s:%s" % (r["kind"], r["slug"]): r for r in usage_rows()}
+                usage_fetched = time.time()
             rows = _rows()
             pickable = [
                 i for i, r in enumerate(rows)
@@ -2386,6 +2433,8 @@ def cmd_ui(argv):
                 y += 1
             if message and h > 1:
                 stdscr.addnstr(h - 1, 0, message[: w - 1], w - 1, curses.A_BOLD)
+            elif h > 1 and any(usage_notice(r) for r in usage.values()):
+                stdscr.addnstr(h - 1, 0, "~ last known usage · d details", w - 1, curses.A_DIM)
             stdscr.refresh()
 
             try:
@@ -2446,6 +2495,7 @@ def cmd_ui(argv):
                 stdscr.addnstr(h - 1, 0, message.ljust(w - 1), w - 1, curses.A_BOLD)
                 stdscr.refresh()
                 usage = {"%s:%s" % (r["kind"], r["slug"]): r for r in usage_rows()}
+                usage_fetched = time.time()
                 stale = [r["label"] for r in usage.values() if r["state"] != "live"]
                 message = ("usage read" if not stale
                            else "usage read; cached for " + ", ".join(stale))

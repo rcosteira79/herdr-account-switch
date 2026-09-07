@@ -398,8 +398,16 @@ so it says nothing until the window has run long enough to mean something: a
 window minutes old would otherwise claim the limit is imminent. A window already
 at 100% reads `spent`.
 
-Usage is read once when the picker opens and then comes from cache, because the
-endpoints rate-limit. `u` forces a re-read.
+The picker and usage panel refresh at the cache interval (two minutes by
+default), because the endpoints rate-limit. `u` in the picker or `r` in the
+usage panel requests a refresh. A successful switch verification also saves
+its usage reading, so opening the picker does not repeat that request.
+
+If a read fails or ages past the cache lifetime, the picker keeps the bar and
+countdown and marks the last known percentage with `~` (for example, `~100%`).
+Press `d` to see the reading's age and refresh error. Refresh respects the
+cache lifetime and the provider's `Retry-After` delay, falling back to five
+minutes when no usable delay is supplied.
 
 `s`, `r` and `x` each open a dialog in the middle of the screen. Deleting removes
 this plugin's saved copy of a login and nothing else: the credential store the

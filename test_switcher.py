@@ -457,6 +457,89 @@ S.fetch_usage = REAL_FETCH_USAGE
 S.renew_profile = REAL_RENEW_PROFILE
 
 # ---- which codex windows reach the badge ---------------------------------
+
+print("\nswitch verification keeps the usage it already paid to read")
+fake = reset()
+S._write_json_secret(S.USAGE_CACHE, {})
+S.renew_profile = lambda k, p, force=False: p.get("payload")
+asked = []
+def verified_usage(*args):
+    asked.append(1)
+    return [{"label": "session", "percent": 100}]
+S.fetch_usage = verified_usage
+S.proven_payload("claude", S.get_profile("claude", "target"))
+cached = S._usage_cache()["claude:target"]
+check("the switch check records the actual full session",
+      cached["windows"][0]["percent"] == 100, str(cached))
+S._remember_usage("claude:live", [{"label": "session", "percent": 25}])
+asked.clear()
+S.usage_rows(["claude"])
+check("opening the picker reuses that read instead of asking again",
+      not asked, str(asked))
+
+print("\nreporting cooldowns follow the provider's Retry-After")
+error = http_error(429)
+error.headers = {"Retry-After": "901"}
+check("a longer cooldown is not cut short", S._usage_retry_delay(error) == 901)
+error.headers = {"Retry-After": "201"}
+check("a shorter cooldown does not become five minutes",
+      S._usage_retry_delay(error) == 201)
+error.headers = {"Retry-After": "0"}
+check("zero does not trigger immediate repeated requests",
+      S._usage_retry_delay(error) == S.USAGE_BACKOFF_S)
+error.headers = {"Retry-After": "invalid"}
+check("a malformed cooldown falls back safely",
+      S._usage_retry_delay(error) == S.USAGE_BACKOFF_S)
+error.headers = {"Retry-After": "Mon, 07 Sep 2099 12:00:00 GMT"}
+check("an HTTP date is accepted", S._usage_retry_delay(error) > 901)
+error.headers = {"Retry-After": "901"}
+S.fetch_usage = raises(error)
+S.proven_payload("claude", S.get_profile("claude", "target"))
+retry = S._usage_cache()["claude:target"]["retry_after"]
+check("a throttled switch check shares its cooldown with the picker",
+      899 < retry - time.time() <= 901, str(retry))
+
+print("\na failed usage read cannot advertise an empty account")
+fake = reset()
+S.renew_profile = lambda k, p, force=False: p.get("payload")
+asked = []
+def limited_usage(*args):
+    asked.append(1)
+    raise http_error(429)
+S.fetch_usage = limited_usage
+old_at = time.time() - 7200
+S._write_json_secret(S.USAGE_CACHE, {"claude:target": {
+    "at": old_at,
+    "windows": [{"label": "session", "percent": 0, "read_at": old_at}],
+}})
+row = next(r for r in S.usage_rows(["claude"]) if r["slug"] == "target")
+check("a 429 keeps the last reading explicitly marked as stale",
+      "~0%" in S.usage_summary(row)[0] and "rate limited" not in S.usage_summary(row)[0],
+      str(S.usage_summary(row)))
+detail = S.usage_detail(row)
+check("expanded usage gives the reason and age alongside the old numbers",
+      "rate limited" in detail[0][0] and "ago" in detail[0][0]
+      and "0%" in detail[1][0], str(detail))
+asked.clear()
+row = next(r for r in S.usage_rows(["claude"]) if r["slug"] == "target")
+check("backoff preserves the failure without another request",
+      not asked and row["problem"] == "rate limited", str(row))
+row = {"state": "live", "at": old_at, "windows": row["windows"]}
+check("a picker left open ages a previously live reading",
+      "~0%" in S.usage_summary(row)[0], str(S.usage_summary(row)))
+row["at"] = time.time()
+check("a recent successful read still shows the reported usage",
+      "0%" in S.usage_summary(row)[0] and "~" not in S.usage_summary(row)[0],
+      str(S.usage_summary(row)))
+row["problem"] = "rate limited"
+row["windows"] = [{"label": "session", "percent": 100,
+                   "resets_at": time.time() + 7200}]
+text, severity = S.usage_summary(row)
+check("a stale full session retains its reset and critical colour",
+      "~100%" in text and text.endswith(S.RESET_MARK) and severity == "crit"
+      and len(text) <= S.USAGE_W, text)
+S.fetch_usage = REAL_FETCH_USAGE
+S.renew_profile = REAL_RENEW_PROFILE
 #
 # Codex reports two: the five-hour one that stops you hour to hour, and the
 # weekly one. Only the longest was kept, so a five-hour window sitting at 100%
