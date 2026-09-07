@@ -47,3 +47,21 @@ They cover saving and reusing verification reads, sharing verification backoff,
 retry delays, stale-zero presentation, and aging a reading while the picker
 remains open. These changes improve recovery and reduce duplicate reads; they
 cannot guarantee that Anthropic's reporting endpoint will accept a request.
+
+# Follow-up: ccstatusline had a newer reading
+
+Later the picker still showed Mindera session 29%, read 58 minutes earlier,
+while ccstatusline showed 100%. Inspection of ccstatusline's installed source
+confirmed that it can use Claude's `rate_limits` status-line input directly,
+or fetch the usage API when required fields are missing. Its local API cache
+contained session 100% and weekly 76%, with a SHA-256 access-token fingerprint
+matching Mindera and not Personal. The switcher was ignoring this local source.
+
+The switcher now imports newer ccstatusline cache readings only after matching
+that fingerprint to the profile's actual access token. It retains the file's
+observation timestamp and its own API cooldown. Both panes inspect local data
+on UI ticks, independently of the slower network refresh interval. Tests cover
+account isolation, original timestamps, cooldown retention, partial/invalid
+cache files, absent model windows, and not replacing newer provider readings.
+This reads ccstatusline's saved cache; it does not intercept status-line stdin
+or assume that every value rendered by ccstatusline has been saved there.

@@ -793,6 +793,7 @@ CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 CLAUDE_USAGE_BETA = "oauth-2025-04-20"
 CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
 USAGE_CACHE = os.path.join(STATE_DIR, "usage-cache.json")
+CCSTATUSLINE_CACHE = os.path.expanduser("~/.cache/ccstatusline/usage.json")
 USAGE_TTL_S = _num_env("ACCOUNT_SWITCH_USAGE_TTL_S", 120.0)
 USAGE_TIMEOUT_S = _num_env("ACCOUNT_SWITCH_USAGE_TIMEOUT_S", 8.0)
 # How long to leave an account alone after it answers 429.
@@ -1278,6 +1279,68 @@ def _usage_cache():
     return _read_json(USAGE_CACHE) or {}
 
 
+def _ccstatusline_usage(payload):
+    """Read usage only when ccstatusline's token fingerprint proves ownership.
+
+    Its file mtime is the observation time, not the time we import it. Opening
+    before fstat keeps the timestamp and data tied to the same file on replace.
+    Missing, malformed, or differently authenticated caches are not evidence.
+    """
+    token, _ = _claude_auth(payload)
+    if not token:
+        return None
+    try:
+        with open(CCSTATUSLINE_CACHE, encoding="utf-8") as handle:
+            at = os.fstat(handle.fileno()).st_mtime
+            data = json.load(handle)
+        if not isinstance(data, dict) or data.get("error"):
+            return None
+        if data.get("tokenHash") != hashlib.sha256(token.encode()).hexdigest()[:16]:
+            return None
+        if at > time.time():
+            return None
+        windows = []
+        for prefix, label in (("session", "session"), ("weekly", "weekly_all"),
+                              ("fable", "weekly Fable"),
+                              ("weeklySonnet", "weekly Sonnet"),
+                              ("weeklyOpus", "weekly Opus")):
+            percent = data.get(prefix + "Usage")
+            resets = _iso_epoch(data.get(prefix + "ResetAt"))
+            if isinstance(percent, bool) or not isinstance(percent, (int, float)):
+                continue
+            if not 0 <= percent <= 100:
+                continue
+            # ccstatusline defaults absent model buckets to zero. A model
+            # window without a reset is not proof of another allowance.
+            if prefix not in ("session", "weekly") and resets is None:
+                continue
+            windows.append({"label": label, "percent": percent,
+                            "resets_at": resets, "read_at": at,
+                            "blocked": None, "binding": False})
+        if not windows:
+            return None
+        return {"at": at, "windows": windows}
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def _import_ccstatusline_usage(key, payload, entry):
+    local = _ccstatusline_usage(payload)
+    if not local or local["at"] <= (entry.get("at") or 0):
+        return entry
+    # Keep our endpoint cooldown: a local observation doesn't lift a 429.
+    with _Lock():
+        cache = _usage_cache()
+        current = cache.get(key) or {}
+        if local["at"] <= (current.get("at") or 0):
+            return current
+        current.update(local)
+        cache[key] = current
+        _secure_dir(STATE_DIR)
+        _write_json_secret(USAGE_CACHE, cache)
+    return current
+
+
 def _remember_usage(key, windows):
     cache = _usage_cache()
     entry = cache.get(key) or {}
@@ -1340,11 +1403,13 @@ def usage_rows(kinds=None, refresh=True):
             payload = live if is_live else profile.get("payload")
             windows, state, problem = None, "unknown", None
             entry = cache.get(key) or {}
+            if kind == "claude":
+                entry = _import_ccstatusline_usage(key, payload, entry)
             # The endpoint rate-limits, so the live account observes the cache
             # too. It used to refetch on every call, which is what earns a 429.
             stale = (time.time() - (entry.get("at") or 0)) > USAGE_TTL_S
             resting = time.time() < (entry.get("retry_after") or 0)
-            if resting:
+            if resting and stale:
                 problem = "rate limited"
             if refresh and stale and not resting:
                 try:
@@ -1387,6 +1452,8 @@ def usage_rows(kinds=None, refresh=True):
                 at = time.time()
             elif entry.get("windows"):
                 windows, state, at = entry["windows"], "cached", entry.get("at")
+                if refresh and not stale and not problem:
+                    state = "live"
             else:
                 windows, at = [], None
             rows.append({
@@ -1780,6 +1847,7 @@ def cmd_usage_ui(argv):
         stdscr.timeout(2000)
         rows, fetched = usage_rows(), time.time()
         while True:
+            rows = usage_rows(refresh=False)
             stdscr.erase()
             height, width = stdscr.getmaxyx()
             stdscr.addnstr(0, 0, "USAGE", width - 1, curses.A_BOLD)
@@ -2367,6 +2435,11 @@ def cmd_ui(argv):
             if time.time() - usage_fetched >= USAGE_TTL_S:
                 usage = {"%s:%s" % (r["kind"], r["slug"]): r for r in usage_rows()}
                 usage_fetched = time.time()
+            else:
+                # Local readers (including ccstatusline) may have new numbers
+                # even while our reporting endpoint is in cooldown.
+                usage = {"%s:%s" % (r["kind"], r["slug"]): r
+                         for r in usage_rows(refresh=False)}
             rows = _rows()
             pickable = [
                 i for i, r in enumerate(rows)

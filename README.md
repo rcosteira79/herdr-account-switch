@@ -264,6 +264,16 @@ credential.
 
 ### Where the numbers come from
 
+When ccstatusline is installed, the switcher also reads its local
+`~/.cache/ccstatusline/usage.json`. A reading is accepted only when its token
+fingerprint matches that profile's access token and it is newer than the
+switcher's reading. Its original timestamp is preserved. Both panes check for
+local updates on their UI ticks, even during a reporting API cooldown, without
+another network request. Missing or incompatible caches fall back to the
+provider endpoint. Values supplied directly to ccstatusline by Claude's
+status-line input are only available here if ccstatusline also saves them in
+that cache.
+
 Each provider publishes the account's own allowance:
 
 ```
