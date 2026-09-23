@@ -1439,6 +1439,14 @@ def _age(seconds):
 
 # ---- badges ---------------------------------------------------------------
 
+def badge_window(row):
+    """The overall weekly usage, excluding model-specific limits."""
+    return next((w for w in shown_windows(row)
+                 if (w.get("label") or "").lower()
+                 in ("weekly", "weekly_all", "seven_day", "7d", "168h")
+                 and isinstance(w.get("percent"), (int, float))), None)
+
+
 def account_labels(kinds=None, include_usage=False):
     """{kind: label} for the kinds worth naming. One saved profile is enough.
 
@@ -1460,7 +1468,7 @@ def account_labels(kinds=None, include_usage=False):
             labels[kind] = current["label"]
             if include_usage:
                 entry = _usage_cache().get("%s:%s" % (kind, current["slug"])) or {}
-                window = summary_window(entry)
+                window = badge_window(entry)
                 if window:
                     stale = (not entry.get("at") or usage_notice(entry)
                              or time.time() < (entry.get("retry_after") or 0))

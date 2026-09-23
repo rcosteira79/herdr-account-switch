@@ -136,8 +136,8 @@ kind it can name, each prefixed with the agent's name:
 Claude 👤 work 42% · Codex 👤 spare 18%
 ```
 
-The percentage is usage consumed in the same window selected by the account
-picker. It appears after the account name when a cached reading exists;
+The percentage is overall weekly usage consumed, excluding model-specific
+limits such as Fable. It appears after the account name when a cached weekly reading exists;
 `~42%` marks an old reading or a reporting cooldown. While herdr polls the badge,
 it refreshes the active account's usage every two minutes by default, respecting
 provider cooldowns. Set `usage_ttl_s = 300` for five minutes, or use
