@@ -1440,10 +1440,10 @@ def _age(seconds):
 # ---- badges ---------------------------------------------------------------
 
 def badge_window(row):
-    """The overall weekly usage, excluding model-specific limits."""
+    """The current five-hour session usage, regardless of other limits."""
     return next((w for w in shown_windows(row)
                  if (w.get("label") or "").lower()
-                 in ("weekly", "weekly_all", "seven_day", "7d", "168h")
+                 in ("session", "five_hour", "5h")
                  and isinstance(w.get("percent"), (int, float))), None)
 
 

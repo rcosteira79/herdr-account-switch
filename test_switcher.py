@@ -388,46 +388,46 @@ def tab_badge():
 
 
 check("missing usage keeps the name", tab_badge() == "👤 Live", tab_badge())
-S._remember_usage("claude:target", [{"label": "weekly", "percent": 99}])
+S._remember_usage("claude:target", [{"label": "session", "percent": 99}])
 check("another account's usage is never borrowed", tab_badge() == "👤 Live", tab_badge())
 S._remember_usage("claude:live", [
     {"label": "session", "percent": 42, "window_seconds": 18000},
     {"label": "weekly", "percent": 18, "window_seconds": 604800},
 ])
-check("the weekly window follows the name", tab_badge() == "👤 Live 18%", tab_badge())
+check("the session window follows the name", tab_badge() == "👤 Live 42%", tab_badge())
 check("pane labels keep their existing format", S.account_labels(["claude"]) == {"claude": "Live"})
 cache = S._usage_cache()
 cache["claude:live"]["at"] = time.time() - S.USAGE_TTL_S - 1
 S._write_json_secret(S.USAGE_CACHE, cache)
-check("old readings carry a tilde", tab_badge() == "👤 Live ~18%", tab_badge())
+check("old readings carry a tilde", tab_badge() == "👤 Live ~42%", tab_badge())
+S._remember_usage("claude:live", [{"label": "weekly", "percent": 67}])
+check("missing session usage keeps only the name", tab_badge() == "👤 Live", tab_badge())
 S._remember_usage("claude:live", [{"label": "session", "percent": 0}])
-check("missing weekly usage keeps only the name", tab_badge() == "👤 Live", tab_badge())
-S._remember_usage("claude:live", [{"label": "weekly", "percent": 0}])
 check("zero usage is shown", tab_badge() == "👤 Live 0%", tab_badge())
 S._rest_usage("claude:live", 300)
 check("a cooldown marks even a recent reading", tab_badge() == "👤 Live ~0%", tab_badge())
 S._remember_usage("claude:live", [
     {"label": "session", "percent": 42}, {"label": "weekly", "percent": 100}])
-check("exhausted weekly usage is shown", tab_badge() == "👤 Live 100%", tab_badge())
-for label in ("weekly_all", "weekly", "seven_day", "7d", "168h"):
+check("exhausted weekly usage does not replace the session", tab_badge() == "👤 Live 42%", tab_badge())
+for label in ("session", "five_hour", "5h"):
     S._remember_usage("claude:live", [
-        {"label": "session", "percent": 0},
+        {"label": "weekly_all", "percent": 67},
         {"label": "weekly Fable", "percent": 100},
-        {"label": label, "percent": 67},
+        {"label": label, "percent": 0},
     ])
-    check("overall weekly usage wins over exhausted Fable: " + label,
-          tab_badge() == "👤 Live 67%", tab_badge())
+    check("session usage wins over exhausted Fable: " + label,
+          tab_badge() == "👤 Live 0%", tab_badge())
 S._remember_usage("claude:live", [
     {"label": "session", "percent": 100},
     {"label": "weekly", "percent": 67},
 ])
-check("an exhausted session does not replace weekly usage",
-      tab_badge() == "👤 Live 67%", tab_badge())
+check("an exhausted session is shown",
+      tab_badge() == "👤 Live 100%", tab_badge())
 S._remember_usage("claude:live", [
-    {"label": "weekly_all", "percent": None},
+    {"label": "session", "percent": None},
     {"label": "weekly Fable", "percent": 100},
 ])
-check("unavailable weekly usage keeps only the name", tab_badge() == "👤 Live", tab_badge())
+check("unavailable session usage keeps only the name", tab_badge() == "👤 Live", tab_badge())
 fake.store = claude_payload("TARGET", "target-access", "target-refresh", expired=False)
 check("an account change picks its own usage", tab_badge() == "👤 Target 99%", tab_badge())
 fake.store = claude_payload("UNSAVED", "other-access", "other-refresh", expired=False)
@@ -448,7 +448,7 @@ fake = reset()
 S._write_json_secret(S.USAGE_CACHE, {})
 asked = []
 S.fetch_usage = lambda kind, payload: asked.append(payload["who"]) or [
-    {"label": "weekly", "percent": 23}]
+    {"label": "session", "percent": 23}]
 S.cmd_badge_refresh(["claude"])
 S.cmd_badge_refresh(["claude"])
 check("repeated ticks fetch only the live account once", asked == ["LIVE"], str(asked))
