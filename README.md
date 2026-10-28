@@ -18,7 +18,9 @@ has been billing.
 - **Switch** from an overlay picker, or cycle to the next account with one
   keybinding — no UI, no prompt.
 - Both CLIs re-read their credential store on every request, so **agents that
-  are already running switch too**, from their next turn. Nothing to restart.
+  are already running switch too**, from their next turn. Nothing to restart —
+  unless the session's environment carries a token that outranks the store
+  ([below](#a-token-in-the-environment-outranks-the-store)).
 - A **`$acct` badge** on every claude/codex pane naming the account in use, so
   the sidebar answers "which account is this burning" at a glance. It appears as
   soon as one profile is saved: `👤 work` for a saved login, `👤 work*` for a
@@ -596,6 +598,23 @@ Where that notification appears is herdr's setting, not this plugin's.
 `[ui.toast] delivery = "system"` hands it to macOS, which drops it when the
 alert style is off. `delivery = "herdr"` draws it inside herdr instead, and
 needs no permission from macOS.
+
+### A token in the environment outranks the store
+
+Claude Code prefers `CLAUDE_CODE_OAUTH_TOKEN` to the login in its credential
+store. A session started with it set never reads the store, so a switch moves
+the store and the badge while that session keeps billing the token's account.
+`claude auth status` shows which one a shell gets: `"authMethod": "oauth_token"`
+is the variable, `"claude.ai"` is the store.
+
+A shell profile that exports it — `~/.zshenv` is read by every pane's shell —
+pins every pane opened since. Running `/login` in a pane recovers that session
+only, and only until the next pane opens.
+
+A claude switch now counts the running `claude` processes that started with the
+variable set and says so in its result and its notification: `3 running sessions
+will not follow: CLAUDE_CODE_OAUTH_TOKEN is set in them`. Unset it where it is
+exported, then restart those sessions from a fresh shell.
 
 ## Fragility
 

@@ -698,6 +698,84 @@ def _backup(kind, payload):
     return path
 
 
+# Claude Code prefers this to the stored login. A session started with it set
+# bills that token's account whatever a switch installs, and a shell profile
+# exporting it pins every pane opened since.
+CLAUDE_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN"
+PROC = "/proc"
+
+
+def _process_environments(name):
+    """{pid: environment} for this user's running processes called `name`.
+
+    The environment each one started with, which is the one its login came
+    from. Values are cut at the first space on macOS, where `ps` prints them
+    joined — enough to tell set from unset, which is all this is for.
+    """
+    if IS_MAC:
+        try:
+            listed = _run(["ps", "-A", "-o", "pid=,comm="])
+        except OSError:
+            return {}
+        pids = []
+        for line in listed.stdout.splitlines():
+            pid, _, comm = line.strip().partition(" ")
+            if pid.isdigit() and os.path.basename(comm.strip()) == name:
+                pids.append(pid)
+        if not pids:
+            return {}
+        try:
+            shown = _run(["ps", "-E", "-ww", "-o", "pid=,command=",
+                          "-p", ",".join(pids)])
+        except OSError:
+            return {}
+        envs = {}
+        for line in shown.stdout.splitlines():
+            pid, _, rest = line.strip().partition(" ")
+            if pid.isdigit():
+                envs[int(pid)] = dict(re.findall(
+                    r"(?:^| )([A-Za-z_][A-Za-z0-9_]*)=(\S*)", rest))
+        return envs
+    envs = {}
+    try:
+        entries = os.listdir(PROC)
+    except OSError:
+        return {}
+    for pid in entries:
+        if not pid.isdigit():
+            continue
+        try:
+            with open(os.path.join(PROC, pid, "comm")) as f:
+                if f.read().strip() != name:
+                    continue
+            with open(os.path.join(PROC, pid, "environ"), "rb") as f:
+                raw = f.read().decode(errors="replace")
+        except OSError:
+            continue
+        envs[int(pid)] = dict(
+            item.split("=", 1) for item in raw.split("\0") if "=" in item)
+    return envs
+
+
+def pinned_sessions(kind):
+    """Running sessions of `kind` that never read the store a switch writes."""
+    if kind != "claude":
+        return []
+    return sorted(pid for pid, env in _process_environments("claude").items()
+                  if env.get(CLAUDE_TOKEN_ENV))
+
+
+def _pinned_warning(kind):
+    pinned = pinned_sessions(kind)
+    if not pinned:
+        return ""
+    one = len(pinned) == 1
+    them = "it" if one else "them"
+    return ("%d running session%s will not follow: %s is set in %s — unset it "
+            "and restart %s" % (len(pinned), "" if one else "s",
+                                CLAUDE_TOKEN_ENV, them, them))
+
+
 # ---- the switch itself ----------------------------------------------------
 
 def switch(kind, key):
@@ -763,8 +841,11 @@ def switch(kind, key):
 
     stamp_badges()
     ident = backend.describe(target.get("identity") or {})
-    notify(f"{backend.title}: {target['label']}", ident)
-    return f"{kind}: switched to {target['label']} ({ident})"
+    warning = _pinned_warning(kind)
+    notify(f"{backend.title}: {target['label']}",
+           f"{ident} — {warning}" if warning else ident)
+    done = f"{kind}: switched to {target['label']} ({ident})"
+    return f"{done} — {warning}" if warning else done
 
 
 def next_profile(kind):

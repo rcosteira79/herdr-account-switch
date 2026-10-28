@@ -13,6 +13,7 @@ import json
 import os
 import shutil
 import signal
+import subprocess
 import sys
 import tempfile
 import time
@@ -29,6 +30,7 @@ FAILED = []
 REAL_RENEW_PROFILE = S.renew_profile
 REAL_FETCH_USAGE = S.fetch_usage
 REAL_NOTIFY = S.notify
+REAL_PROCESS_ENVIRONMENTS = S._process_environments
 
 
 def check(name, ok, detail=""):
@@ -109,6 +111,7 @@ def reset(target_payload=None):
         target_payload or claude_payload("TARGET", "old-access", "r1")))
     S.stamp_badges = lambda *a, **k: None
     S.notify = lambda *a, **k: None
+    S._process_environments = lambda name: {}
     return fake
 
 
@@ -177,6 +180,104 @@ S.fetch_usage = raises(AssertionError("asked the provider with the check off"))
 msg, err = switch()
 check("switch completed without asking the provider", msg is not None, str(err))
 S.VERIFY_SWITCH = True
+
+# ---- sessions a switch cannot reach --------------------------------------
+#
+# Claude Code prefers CLAUDE_CODE_OAUTH_TOKEN to the stored login. A shell
+# profile exporting it pinned every new pane to one account: the switch went
+# through, the badge moved, and the panes kept hitting that account's limit.
+
+print("\na switch says which running sessions will not follow it")
+fake = reset()
+S.renew_profile = lambda k, p, force=False: p.get("payload")
+S.fetch_usage = lambda k, payload: [{"percent": 10}]
+told = []
+S.notify = lambda title, body="": told.append((title, body))
+S._process_environments = lambda name: {
+    101: {"CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-x", "HOME": "/h"},
+    102: {"CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-x"},
+    103: {"HOME": "/h"},
+    104: {"CLAUDE_CODE_OAUTH_TOKEN": ""},
+}
+msg, err = switch()
+check("switch completed", msg is not None, str(err))
+check("the store still moved", fake.store.get("who") == "TARGET")
+check("the result counts the pinned sessions",
+      msg is not None and "2 running" in msg, str(msg))
+check("and names what pins them",
+      msg is not None and "CLAUDE_CODE_OAUTH_TOKEN" in msg, str(msg))
+check("the notification says it too",
+      bool(told) and "CLAUDE_CODE_OAUTH_TOKEN" in told[-1][1], str(told))
+check("the token itself is never repeated",
+      "sk-ant" not in (msg or "") + json.dumps(told), str(msg))
+
+print("\nand says nothing when every session reads the store")
+fake = reset()
+S._process_environments = lambda name: {103: {"HOME": "/h"}}
+msg, err = switch()
+check("switch completed", msg is not None, str(err))
+check("no warning", msg is not None and "CLAUDE_CODE_OAUTH_TOKEN" not in msg,
+      str(msg))
+
+print("\na codex switch is not held to claude's variable")
+S._process_environments = lambda name: {101: {"CLAUDE_CODE_OAUTH_TOKEN": "x"}}
+check("no codex session is reported pinned", S.pinned_sessions("codex") == [],
+      str(S.pinned_sessions("codex")))
+
+print("\nmacOS: environments are read off ps, for claude processes only")
+REAL_RUN, REAL_IS_MAC = S._run, S.IS_MAC
+asked_ps = []
+
+
+def fake_ps(argv, stdin_text=None, timeout=None):
+    asked_ps.append(argv)
+    if "pid=,comm=" in argv:
+        out = ("  101 claude\n"
+               "  102 /Applications/Claude.app/Contents/MacOS/Claude\n"
+               "  103 /opt/homebrew/bin/claude\n"
+               "  104 -zsh\n")
+    else:
+        out = ("  101 claude --resume HOME=/h CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-x"
+               " TERM=xterm\n"
+               "  103 /opt/homebrew/bin/claude HOME=/h TERM=xterm\n")
+    return subprocess.CompletedProcess(argv, 0, out, "")
+
+
+S._run, S.IS_MAC = fake_ps, True
+envs = REAL_PROCESS_ENVIRONMENTS("claude")
+S._run, S.IS_MAC = REAL_RUN, REAL_IS_MAC
+check("both claude processes are read", sorted(envs) == [101, 103], str(envs))
+check("the desktop app and the shell are not",
+      bool(asked_ps) and asked_ps[-1][-1] == "101,103", str(asked_ps))
+check("the token is found where it is set",
+      envs.get(101, {}).get("CLAUDE_CODE_OAUTH_TOKEN") == "sk-ant-oat01-x",
+      str(envs.get(101)))
+check("and not where it is not",
+      "CLAUDE_CODE_OAUTH_TOKEN" not in envs.get(103, {}), str(envs.get(103)))
+
+print("\nlinux: environments are read off /proc, for claude processes only")
+REAL_PROC = S.PROC
+S.PROC = tempfile.mkdtemp(prefix="account-switch-proc-")
+for pid, comm, environ in (
+        ("101", "claude\n", b"HOME=/h\0CLAUDE_CODE_OAUTH_TOKEN=tok\0"),
+        ("102", "zsh\n", b"CLAUDE_CODE_OAUTH_TOKEN=tok\0"),
+        ("103", "claude\n", None),
+        ("self", "claude\n", b"CLAUDE_CODE_OAUTH_TOKEN=tok\0")):
+    os.makedirs(os.path.join(S.PROC, pid))
+    with open(os.path.join(S.PROC, pid, "comm"), "w") as f:
+        f.write(comm)
+    if environ is not None:
+        with open(os.path.join(S.PROC, pid, "environ"), "wb") as f:
+            f.write(environ)
+S.IS_MAC = False
+envs = REAL_PROCESS_ENVIRONMENTS("claude")
+S.IS_MAC = REAL_IS_MAC
+shutil.rmtree(S.PROC, ignore_errors=True)
+S.PROC = REAL_PROC
+check("only the readable claude process is read", sorted(envs) == [101],
+      str(envs))
+check("its token is found",
+      envs.get(101, {}).get("CLAUDE_CODE_OAUTH_TOKEN") == "tok", str(envs))
 
 # ---- the same switch, through the real renewal path ----------------------
 #
