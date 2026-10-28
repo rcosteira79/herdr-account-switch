@@ -616,6 +616,9 @@ variable set and says so in its result and its notification: `3 running sessions
 will not follow: CLAUDE_CODE_OAUTH_TOKEN is set in them`. Unset it where it is
 exported, then restart those sessions from a fresh shell.
 
+How it was found, and how to tell which account such a token bills:
+[`docs/solutions/runtime-errors/oauth-token-in-the-environment-pins-panes.md`](docs/solutions/runtime-errors/oauth-token-in-the-environment-pins-panes.md).
+
 ## Fragility
 
 Credential layouts are the agents' private business and can change without
