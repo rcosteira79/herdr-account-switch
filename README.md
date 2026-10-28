@@ -17,10 +17,13 @@ has been billing.
   store the CLI actually reads.
 - **Switch** from an overlay picker, or cycle to the next account with one
   keybinding — no UI, no prompt.
-- Both CLIs re-read their credential store on every request, so **agents that
-  are already running switch too**, from their next turn. Nothing to restart —
-  unless the session's environment carries a token that outranks the store
-  ([below](#a-token-in-the-environment-outranks-the-store)).
+- **Agents that are already running switch too**, from their next turn. Codex
+  re-reads its credential store on every request. A running Claude Code session
+  re-reads its store only when it sees the store change, which a Keychain write
+  alone does not show it, so a switch also nudges the file it watches
+  ([below](#a-running-claude-session-watches-a-file-not-the-keychain)). Nothing
+  to restart — unless the session's environment carries a token that outranks
+  the store ([below](#a-token-in-the-environment-outranks-the-store)).
 - A **`$acct` badge** on every claude/codex pane naming the account in use, so
   the sidebar answers "which account is this burning" at a glance. It appears as
   soon as one profile is saved: `👤 work` for a saved login, `👤 work*` for a
@@ -448,7 +451,9 @@ press s)"* means you are logged into something the plugin has no copy of yet.
 
 `CLAUDE_CONFIG_DIR` and `CODEX_HOME` are honoured if you set them. On claude,
 **only** the `oauthAccount` key of `~/.claude.json` is touched — projects,
-history and onboarding state are rewritten verbatim.
+history and onboarding state are rewritten verbatim. A Keychain switch also
+moves the modification time of `~/.claude/.credentials.json` when that file
+exists, and leaves its contents alone.
 
 Profiles live in `HERDR_PLUGIN_STATE_DIR/profiles/<kind>/<slug>.json`, mode
 `0600` inside a `0700` directory. They are password-equivalent: the same
@@ -598,6 +603,24 @@ Where that notification appears is herdr's setting, not this plugin's.
 `[ui.toast] delivery = "system"` hands it to macOS, which drops it when the
 alert style is off. `delivery = "herdr"` draws it inside herdr instead, and
 needs no permission from macOS.
+
+### A running Claude session watches a file, not the Keychain
+
+A running Claude Code session holds its access token in memory. It drops it
+for the store's when it judges the login changed from outside, and it judges
+that by the modification time of `.credentials.json` in its config directory —
+even on macOS, where the login itself is in the Keychain. That file can exist
+holding nothing but MCP logins. While it does and its time stands still, a
+Keychain switch goes unnoticed: the store and the badge move, and every running
+session keeps billing the account it had. A 429 does not make it look again.
+
+So a claude switch moves that file's modification time when the file exists,
+without changing its contents. Without the file, a session looks at the store
+again on its own. Sessions already stuck on an old account recover with
+`touch ~/.claude/.credentials.json`.
+
+How it was found and reproduced without touching a real login:
+[`docs/solutions/runtime-errors/running-claude-session-ignores-keychain-switch.md`](docs/solutions/runtime-errors/running-claude-session-ignores-keychain-switch.md).
 
 ### A token in the environment outranks the store
 

@@ -498,6 +498,14 @@ class ClaudeBackend(Backend):
                     "could not write the Keychain item 'Claude Code-credentials' "
                     "(unlock the login keychain and retry)"
                 )
+            # A running session notices an outside login change by this file's
+            # mtime, even with the login in the Keychain. While the file exists
+            # and the mtime stands still, it keeps billing the token it holds.
+            if os.path.exists(self.creds_file):
+                try:
+                    os.utime(self.creds_file)
+                except OSError:
+                    pass
         else:
             _write_json_secret(self.creds_file, creds)
 

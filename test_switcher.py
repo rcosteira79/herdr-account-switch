@@ -279,6 +279,39 @@ check("only the readable claude process is read", sorted(envs) == [101],
 check("its token is found",
       envs.get(101, {}).get("CLAUDE_CODE_OAUTH_TOKEN") == "tok", str(envs))
 
+# ---- what tells a running session the login changed ----------------------
+#
+# Claude Code looks for an outside login change by the mtime of
+# .credentials.json in its config dir, even when the login itself is in the
+# Keychain. While that file exists and its mtime stands still, a running
+# session keeps the token it holds: a switch moved the Keychain and every pane
+# went on billing the account it had left.
+
+print("\na keychain switch moves the credentials file's mtime when it exists")
+REAL_CONFIG_DIR = os.environ.get("CLAUDE_CONFIG_DIR")
+os.environ["CLAUDE_CONFIG_DIR"] = tempfile.mkdtemp(prefix="account-switch-cfg-")
+claude_store = S.ClaudeBackend()
+if REAL_CONFIG_DIR is None:
+    del os.environ["CLAUDE_CONFIG_DIR"]
+else:
+    os.environ["CLAUDE_CONFIG_DIR"] = REAL_CONFIG_DIR
+claude_store._read_creds = lambda: (None, "keychain")
+claude_store._keychain_write = lambda data: True
+with open(claude_store.creds_file, "w") as f:
+    f.write('{"mcpOAuth": {}}')
+os.utime(claude_store.creds_file, (1000000000, 1000000000))
+claude_store.write_live({"credentials": {"claudeAiOauth": {}}, "store": "keychain"})
+check("its mtime moved", os.stat(claude_store.creds_file).st_mtime > 1000000000,
+      str(os.stat(claude_store.creds_file).st_mtime))
+with open(claude_store.creds_file) as f:
+    check("its contents are left alone", f.read() == '{"mcpOAuth": {}}')
+
+print("\nand never creates one that was not there")
+os.remove(claude_store.creds_file)
+claude_store.write_live({"credentials": {"claudeAiOauth": {}}, "store": "keychain"})
+check("no file appeared", not os.path.exists(claude_store.creds_file))
+shutil.rmtree(claude_store.home, ignore_errors=True)
+
 # ---- the same switch, through the real renewal path ----------------------
 #
 # Only the HTTP layer is replaced here, so renew_profile, fetch_usage and the
