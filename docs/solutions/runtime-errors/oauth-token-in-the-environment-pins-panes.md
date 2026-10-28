@@ -81,3 +81,9 @@ the environment its login came from.
 - Do not export `CLAUDE_CODE_OAUTH_TOKEN` in a shell profile on a machine that
   runs agents under this plugin. A tool that needs a long-lived token can be given
   it on its own command line.
+
+# See also
+
+`docs/solutions/runtime-errors/running-claude-session-ignores-keychain-switch.md`
+has the same symptom with no token in the environment: a running session that
+never notices the Keychain changed.
