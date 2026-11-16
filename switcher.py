@@ -393,6 +393,14 @@ class Backend:
         """Human/stable identity fields for a payload."""
         raise NotImplementedError
 
+    def after_switch(self):
+        """Hook run once a switch has been verified. Returns a short note or None.
+
+        Backends whose running agents cache the login in another process override
+        this to make that process pick the new login up.
+        """
+        return None
+
     def describe(self, identity):
         bits = [identity.get("email") or identity.get("account_id") or "unknown"]
         if identity.get("plan"):
@@ -575,6 +583,27 @@ class CodexBackend(Backend):
             "org": None,
             "plan": openai.get("chatgpt_plan_type") or auth.get("auth_mode"),
         }
+
+    def after_switch(self):
+        """Restart Codex's shared app-server daemon so running panes follow the switch.
+
+        Interactive Codex sessions attach to one long-lived `codex app-server`
+        daemon that keeps the login it started with in memory. Rewriting auth.json
+        alone leaves every attached pane billing the previous account until the
+        daemon restarts (`codex exec` reads the file directly, so it follows at
+        once). Restarting is best-effort: no daemon, no `codex` on PATH, or a
+        failure only produce a note; the switch itself already succeeded. Running
+        turns are interrupted, so callers that care should switch while idle.
+        """
+        try:
+            done = subprocess.run(
+                ["codex", "app-server", "daemon", "restart"],
+                capture_output=True, text=True, timeout=45)
+        except (OSError, subprocess.SubprocessError):
+            return "could not restart the Codex daemon; restart it so open panes follow"
+        if done.returncode != 0:
+            return "Codex daemon restart failed; run `codex app-server daemon restart`"
+        return "Codex daemon restarted"
 
 
 BACKENDS = {b.kind: b for b in (ClaudeBackend(), CodexBackend())}
@@ -850,10 +879,13 @@ def switch(kind, key):
     stamp_badges()
     ident = backend.describe(target.get("identity") or {})
     warning = _pinned_warning(kind)
+    hook = getattr(backend, "after_switch", None)
+    after = hook() if hook else None
+    note = " — ".join(x for x in (warning, after) if x)
     notify(f"{backend.title}: {target['label']}",
-           f"{ident} — {warning}" if warning else ident)
+           f"{ident} — {note}" if note else ident)
     done = f"{kind}: switched to {target['label']} ({ident})"
-    return f"{done} — {warning}" if warning else done
+    return f"{done} — {note}" if note else done
 
 
 def next_profile(kind):

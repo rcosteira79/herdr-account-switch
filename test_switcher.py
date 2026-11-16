@@ -1257,6 +1257,25 @@ check("the refusal is still reported, and nothing is raised", code == 1,
 S.DISPATCH.clear()
 S.DISPATCH.update(real_dispatch)
 
+print("\na Codex switch restarts the shared app-server daemon")
+calls = []
+real_run = S.subprocess.run
+class _Done:
+    def __init__(self, code): self.returncode = code; self.stdout = ""; self.stderr = ""
+S.subprocess.run = lambda cmd, **kw: (calls.append(cmd), _Done(0))[1]
+note = S.CodexBackend().after_switch()
+check("it runs `codex app-server daemon restart`",
+      calls == [["codex", "app-server", "daemon", "restart"]], str(calls))
+check("it reports the restart", note == "Codex daemon restarted", str(note))
+S.subprocess.run = lambda cmd, **kw: _Done(1)
+check("a failed restart is a note, not an error",
+      "failed" in S.CodexBackend().after_switch())
+S.subprocess.run = raises(FileNotFoundError(2, "No such file", "codex"))
+check("a missing codex binary is a note, not an error",
+      "could not restart" in S.CodexBackend().after_switch())
+S.subprocess.run = real_run
+check("other backends have no daemon step", S.ClaudeBackend().after_switch() is None)
+
 shutil.rmtree(STATE, ignore_errors=True)
 print("\n%s — %d of the checks failed"
       % ("FAILED" if FAILED else "PASSED", len(FAILED)))
